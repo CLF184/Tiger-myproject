@@ -39,14 +39,12 @@ public:
      * @param systemMessage 可选的system角色消息
      * @param temperature 采样温度，默认0.8f
      * @param max_tokens 最大生成令牌数，默认1024
-     * @param model 使用的模型名称，默认"gpt-3.5-turbo"
      */
     LlamaClient(const std::string& host = "192.168.31.5", 
                 int port = 8080,
                 const std::string& systemMessage = "",
                 float temperature = 0.8f,
-                int max_tokens = 1024,
-                const std::string& model = "gpt-3.5-turbo");
+                int max_tokens = 1024);
     
     /**
      * 析构函数
@@ -119,7 +117,6 @@ private:
     std::vector<std::pair<std::string, std::string>> m_messageHistory; // 内部存储的消息历史
     float m_temperature;          // 采样温度
     int m_maxTokens;              // 最大生成令牌数
-    std::string m_model;          // 使用的模型名称
 
     // 序列化请求参数为JSON
     std::string serializeRequest(const LlamaRequestParams& params);

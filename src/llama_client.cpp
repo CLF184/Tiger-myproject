@@ -1,3 +1,4 @@
+#include "llama_client.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -22,13 +23,9 @@ std::string createJsonRequest(const LlamaRequestParams& params,
                               const std::vector<std::pair<std::string, std::string>>& messageHistory,
                               const std::string& systemMessage = "",
                               float temperature = 0.8f,
-                              int max_tokens = 1024,
-                              const std::string& model = "gpt-3.5-turbo") {
+                              int max_tokens = 1024) {
     std::stringstream ss;
     ss << "{";
-    
-    // 添加model参数
-    ss << "\"model\":\"" << model << "\",";
     
     ss << "\"messages\":[";
     
@@ -70,10 +67,9 @@ std::string createJsonRequest(const LlamaRequestParams& params,
 }
 
 LlamaClient::LlamaClient(const std::string& host, int port, const std::string& systemMessage,
-                         float temperature, int max_tokens, const std::string& model)
+                         float temperature, int max_tokens)
     : m_host(host), m_port(port), m_socket(-1), m_connected(false),
-      m_systemMessage(systemMessage), m_temperature(temperature), m_maxTokens(max_tokens),
-      m_model(model) {
+      m_systemMessage(systemMessage), m_temperature(temperature), m_maxTokens(max_tokens) {
     // LOGI("LlamaClient initialized with host=%{public}s, port=%{public}d", host.c_str(), port);
 }
 
@@ -138,8 +134,8 @@ bool LlamaClient::isConnected() const {
 }
 
 std::string LlamaClient::serializeRequest(const LlamaRequestParams& params) {
-    // 使用内部存储的消息历史、温度、最大令牌数和模型名称创建请求
-    return createJsonRequest(params, m_messageHistory, m_systemMessage, m_temperature, m_maxTokens, m_model);
+    // 使用内部存储的消息历史、温度和最大令牌数创建请求
+    return createJsonRequest(params, m_messageHistory, m_systemMessage, m_temperature, m_maxTokens);
 }
 
 LlamaResponse LlamaClient::parseResponse(const std::string& json) {
