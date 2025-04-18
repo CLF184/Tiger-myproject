@@ -386,8 +386,7 @@ LlamaClient(const std::string& host = "192.168.31.5",
            int port = 8080,
            const std::string& systemMessage = "",
            float temperature = 0.8f,
-           int max_tokens = 1024,
-           const std::string& model = "gpt-3.5-turbo");
+           int max_tokens = 1024);
 ```
 构造函数，创建LLaMA客户端实例：
 - `host`: LLaMA服务器主机名或IP地址，默认为"192.168.31.5"
@@ -395,7 +394,6 @@ LlamaClient(const std::string& host = "192.168.31.5",
 - `systemMessage`: 可选的system角色消息
 - `temperature`: 采样温度，控制文本生成的随机性，默认为0.8
 - `max_tokens`: 最大生成令牌数，默认为1024
-- `model`: 使用的模型名称，默认为"gpt-3.5-turbo"
 
 ```cpp
 ~LlamaClient();
