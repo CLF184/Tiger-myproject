@@ -1,0 +1,46 @@
+import("//build/ohos.gni")
+import("//build/ohos/ndk/ndk.gni")
+
+ohos_shared_library("myproject_napi") {
+  include_dirs = [ 
+    "//drivers/hdf_core/framework/include",
+    "//drivers/hdf_core/framework/include/osal",
+    "//drivers/hdf_core/framework/include/platform",
+    "//commonlibrary/c_utils/base/include",
+    "//foundation/ace/napi/interfaces/kits",
+    "//base/hiviewdfx/hilog/interfaces/native/innerkits/include",
+    "//third_party/bounds_checking_function/include",
+   ]
+
+  sources = [
+    "myproject_napi.cpp",
+    "buzzer_control.cpp",
+    "fan_control.cpp",
+    "led_control.cpp",
+    "light_sensor.cpp",
+    "pump_control.cpp",
+    "serial_uart.c",
+    "sg90.cpp",
+    "soil_moisture.cpp",
+    "myserial.cpp",
+    "um_adc.c",
+    "um_pwm.c",
+    "um_gpio.c",
+    "llama_client.cpp"
+  ]
+
+  #deps = [ "//foundation/arkui/napi:ace_napi" ]
+
+  external_deps = [
+    "c_utils:utils",
+    "hilog:libhilog",
+    "napi:ace_napi",
+    "hdf_core:libhdf_utils",
+    "hdf_core:libhdf_platform",
+    "hdf_core:hdf_posix_osal",
+  ]
+
+  relative_install_dir = "module"
+  subsystem_name = "sub_samp"
+  part_name = "cpt_samp"
+}
