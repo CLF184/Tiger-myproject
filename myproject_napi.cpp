@@ -21,15 +21,15 @@
 #include "napi/native_node_api.h"
 
 // 包含所有模块的头文件
-#include "buzzer_control.h"
-#include "fan_control.h"
-#include "led_control.h"
-#include "light_sensor.h"
-#include "myserial.h"
-#include "pump_control.h"
-#include "sg90.h"
-#include "soil_moisture.h"
-#include "llama_client.h"  // 添加llama_client头文件
+#include "inc/buzzer_control.h"
+#include "inc/fan_control.h"
+#include "inc/led_control.h"
+#include "inc/light_sensor.h"
+#include "inc/myserial.h"
+#include "inc/pump_control.h"
+#include "inc/sg90.h"
+#include "inc/soil_moisture.h"
+#include "inc/llama_client.h"  // 添加llama_client头文件
 
 // 全局LlamaClient实例
 static llama::LlamaClient* g_llamaClient = nullptr;

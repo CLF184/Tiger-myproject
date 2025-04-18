@@ -1,6 +1,6 @@
-#include "soil_moisture.h"
-#include "um_adc.h"  // 包含ADC功能的头文件
 #include <stdio.h>
+#include "soil_moisture.h"
+#include "um_adc.h"
 
 // ADC通道选择
 #define SOIL_MOISTURE_ADC_CHANNEL ADC_1

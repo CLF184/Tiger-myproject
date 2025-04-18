@@ -1,7 +1,7 @@
-#include "buzzer_control.h"
-#include "um_gpio.h"
 #include <stdio.h>
 #include <unistd.h>
+#include "buzzer_control.h"
+#include "um_gpio.h"
 
 // 蜂鸣器使用的GPIO引脚
 #define BUZZER_GPIO_PIN 382

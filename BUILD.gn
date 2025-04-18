@@ -3,6 +3,7 @@ import("//build/ohos/ndk/ndk.gni")
 
 ohos_shared_library("myproject_napi") {
   include_dirs = [ 
+    "inc",
     "//drivers/hdf_core/framework/include",
     "//drivers/hdf_core/framework/include/osal",
     "//drivers/hdf_core/framework/include/platform",
@@ -14,19 +15,19 @@ ohos_shared_library("myproject_napi") {
 
   sources = [
     "myproject_napi.cpp",
-    "buzzer_control.cpp",
-    "fan_control.cpp",
-    "led_control.cpp",
-    "light_sensor.cpp",
-    "pump_control.cpp",
-    "serial_uart.c",
-    "sg90.cpp",
-    "soil_moisture.cpp",
-    "myserial.cpp",
-    "um_adc.c",
-    "um_pwm.c",
-    "um_gpio.c",
-    "llama_client.cpp"
+    "src/buzzer_control.cpp",
+    "src/fan_control.cpp",
+    "src/led_control.cpp",
+    "src/light_sensor.cpp",
+    "src/pump_control.cpp",
+    "src/serial_uart.c",
+    "src/sg90.cpp",
+    "src/soil_moisture.cpp",
+    "src/myserial.cpp",
+    "src/um_adc.c",
+    "src/um_pwm.c",
+    "src/um_gpio.c",
+    "src/llama_client.cpp"
   ]
 
   #deps = [ "//foundation/arkui/napi:ace_napi" ]

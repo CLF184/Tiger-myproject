@@ -1,6 +1,6 @@
+#include <stdio.h>
 #include "sg90.h"
 #include "um_pwm.h"
-#include <stdio.h>
 
 // 使用PWM1通道控制舵机
 #define SG90_PWM_CHANNEL 1

@@ -1,4 +1,3 @@
-#include "llama_client.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -8,6 +7,7 @@
 #include <string.h>
 #include <iostream>
 #include <sstream>
+#include "llama_client.h"
 // #include "hilog/log.h"
 
 // #define LOG_TAG "LlamaClient"

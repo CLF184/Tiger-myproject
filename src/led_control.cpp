@@ -1,6 +1,6 @@
+#include <stdio.h>
 #include "led_control.h"
 #include "um_gpio.h"
-#include <stdio.h>
 
 /**
  * @brief 初始化LED

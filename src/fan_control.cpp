@@ -1,4 +1,3 @@
-#include "fan_control.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,6 +5,7 @@
 #include <fcntl.h>
 #include "um_gpio.h"
 #include "um_pwm.h"
+#include "fan_control.h"
 
 // 电机控制状态
 static bool isMotorInitialized = false;

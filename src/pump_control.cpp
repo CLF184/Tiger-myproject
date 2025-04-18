@@ -1,7 +1,7 @@
-#include "pump_control.h"
-#include "um_gpio.h"
 #include <stdio.h>
 #include <unistd.h>
+#include "pump_control.h"
+#include "um_gpio.h"
 
 // 使用UM_GPIO_01 (GPIO380)作为水泵控制引脚
 #define PUMP_GPIO UM_GPIO_01

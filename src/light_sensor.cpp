@@ -1,6 +1,6 @@
+#include <stdio.h>
 #include "light_sensor.h"
 #include "um_adc.h"
-#include <stdio.h>
 
 /**
  * ADC range constants
