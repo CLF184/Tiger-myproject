@@ -1,0 +1,16 @@
+# myproject_napi
+
+## 安装说明
+
+要使用此项目，请按照以下步骤操作：
+
+1. 在DevEco Studio终端中运行以下命令安装MQTT包：
+    ```bash
+    ohpm install @ohos/mqtt@2.0.6-rc.0
+    ```
+
+2. 修改`oh-package.json5`文件中的依赖项：
+    - 找到包含`"@ohos/mqtt": "^2.0.6-rc.0"`的行
+    - 将其更改为`"@ohos/mqtt": "2.0.6-rc.0"`（移除脱字符号^）
+
+这将确保在您的项目中使用MQTT包的确切版本2.0.6-rc.0。
