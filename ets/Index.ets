@@ -4,6 +4,7 @@ import common from '@ohos.app.ability.common';
 import image from '@ohos.multimedia.image';  // 添加图片处理模块导入
 import prompt from '@ohos.prompt';
 import { ChatMessage, ChatBubble } from './llama_chat'; // 引入新创建的聊天组件
+import { MqttSettings } from './mqtt_component'; // 引入MQTT设置组件
 
 // 获取应用文件路径
 let context = getContext(this) as common.UIAbilityContext;
@@ -730,6 +731,20 @@ struct Index {
         .padding(16)
         .backgroundColor('#f5f5f5')
         .borderRadius(8)
+        .margin({ bottom: 20 })
+
+        // 添加 MQTT 数据上传组件
+        MqttSettings({
+          soilMoisture: this.soilMoisture,
+          lightLevel: this.lightLevel,
+          temperature: this.temperature,
+          humidity: this.humidity,
+          formaldehyde: this.formaldehyde,
+          tvoc: this.tvoc,
+          co2: this.co2,
+          pixelMap: this.pixelMap,
+          imageUri: this.imageUri
+        })
         .margin({ bottom: 20 })
 
         // 添加 LLaMA 服务器配置区域
