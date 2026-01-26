@@ -33,6 +33,7 @@ DHT dht(DHTPIN, DHTTYPE); // 创建DHT传感器对象
 static constexpr uint8_t PROTO_CMD = 0x10;     // 命令（需要 ACK）
 static constexpr uint8_t PROTO_SENSOR = 0x11;  // 传感器数据（不需要 ACK）
 static constexpr uint8_t PROTO_PHOTO = 0x12;   // 照片分包（需要 ACK）
+static constexpr uint8_t PROTO_PHOTO_META = 0x13; // 照片元信息（需要 ACK）
 static constexpr uint8_t PROTO_ACK = 0x7F;     // ACK
 
 static constexpr uint32_t ACK_TIMEOUT_MS = 300;
@@ -68,7 +69,7 @@ float CO2 = 0;
 
 static inline bool ProtoRequiresAck(uint8_t proto)
 {
-  return proto == PROTO_CMD || proto == PROTO_PHOTO;
+  return proto == PROTO_CMD || proto == PROTO_PHOTO || proto == PROTO_PHOTO_META;
 }
 
 static uint16_t Crc16Ccitt(const uint8_t* data, size_t len)
@@ -195,6 +196,31 @@ void sendPhoto(void *pvParameters){
     return;
   }
 
+  static uint8_t photoTransferId = 0;
+  uint8_t tid = ++photoTransferId;
+
+  // 先发送照片元信息：transferId + 总包数 + 总长度
+  {
+    std::vector<uint8_t> meta;
+    meta.reserve(1 + 2 + 4);
+    uint16_t total16 = (uint16_t)totalChunks;
+    uint32_t totalLen = (uint32_t)fb->len;
+    meta.push_back(tid);
+    meta.push_back((uint8_t)(total16 & 0xFF));
+    meta.push_back((uint8_t)((total16 >> 8) & 0xFF));
+    meta.push_back((uint8_t)(totalLen & 0xFF));
+    meta.push_back((uint8_t)((totalLen >> 8) & 0xFF));
+    meta.push_back((uint8_t)((totalLen >> 16) & 0xFF));
+    meta.push_back((uint8_t)((totalLen >> 24) & 0xFF));
+
+    bool okMeta = SendFrameReliable(PROTO_PHOTO_META, meta.data(), (uint16_t)meta.size());
+    if (!okMeta) {
+      esp_camera_fb_return(fb);
+      vTaskDelete(NULL);
+      return;
+    }
+  }
+
   for (uint32_t idx = 0; idx < totalChunks; idx++) {
     uint32_t off = idx * PHOTO_CHUNK_BYTES;
     uint32_t chunkLen = fb->len - off;
@@ -203,9 +229,10 @@ void sendPhoto(void *pvParameters){
     }
 
     std::vector<uint8_t> payload;
-    payload.reserve(4 + chunkLen);
+    payload.reserve(1 + 4 + chunkLen);
     uint16_t idx16 = (uint16_t)idx;
     uint16_t total16 = (uint16_t)totalChunks;
+    payload.push_back(tid);
     payload.push_back((uint8_t)(idx16 & 0xFF));
     payload.push_back((uint8_t)((idx16 >> 8) & 0xFF));
     payload.push_back((uint8_t)(total16 & 0xFF));

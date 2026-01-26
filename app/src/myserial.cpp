@@ -39,6 +39,7 @@ extern "C" void NotifyImageCapturedFromNative(const char* path);
 static constexpr uint8_t PROTO_CMD = 0x10;     // 命令（需要 ACK）
 static constexpr uint8_t PROTO_SENSOR = 0x11;  // 传感器数据（不需要 ACK）
 static constexpr uint8_t PROTO_PHOTO = 0x12;   // 照片分包（需要 ACK）
+static constexpr uint8_t PROTO_PHOTO_META = 0x13; // 照片元信息（需要 ACK）
 static constexpr uint8_t PROTO_ACK = 0x7F;     // ACK
 
 static constexpr int ACK_TIMEOUT_MS = 300;
@@ -77,7 +78,7 @@ static bool g_ackOk = false;
 
 static inline bool ProtoRequiresAck(uint8_t proto)
 {
-    return proto == PROTO_CMD || proto == PROTO_PHOTO;
+    return proto == PROTO_CMD || proto == PROTO_PHOTO || proto == PROTO_PHOTO_META;
 }
 
 static uint16_t Crc16Ccitt(const uint8_t* data, size_t len)
@@ -286,46 +287,80 @@ static bool HandleFrame(const vector<uint8_t>& raw)
         return true;
     }
 
-    // 照片分包重组
-    static uint8_t photoSeq = 0;
-    static bool photoSeqValid = false;
+    // 照片分包重组（transferId 用于将多帧归并为同一张照片；seq 仅用于 ACK 匹配）
+    static uint8_t photoTransferId = 0;
+    static bool photoActive = false;
     static uint16_t photoTotal = 0;
+    static uint32_t photoTotalLen = 0;
     static uint16_t photoNextIndex = 0;
     static vector<uint8_t> photoBytes;
 
-    if (proto == PROTO_PHOTO) {
-        if (len < 4) {
+    if (proto == PROTO_PHOTO_META) {
+        // payload: transferId(1) + totalChunks(u16) + totalLen(u32)
+        if (len < 1 + 2 + 4) {
             return true;
         }
-        uint16_t idx = static_cast<uint16_t>(payload[0]) | (static_cast<uint16_t>(payload[1]) << 8);
-        uint16_t total = static_cast<uint16_t>(payload[2]) | (static_cast<uint16_t>(payload[3]) << 8);
-        const uint8_t* chunk = payload + 4;
-        uint16_t chunkLen = static_cast<uint16_t>(len - 4);
+        uint8_t tid = payload[0];
+        uint16_t total = static_cast<uint16_t>(payload[1]) | (static_cast<uint16_t>(payload[2]) << 8);
+        uint32_t totalLen = static_cast<uint32_t>(payload[3]) |
+                            (static_cast<uint32_t>(payload[4]) << 8) |
+                            (static_cast<uint32_t>(payload[5]) << 16) |
+                            (static_cast<uint32_t>(payload[6]) << 24);
 
-        if (!photoSeqValid || seq != photoSeq) {
-            photoSeq = seq;
-            photoSeqValid = true;
+        photoTransferId = tid;
+        photoActive = true;
+        photoTotal = total;
+        photoTotalLen = totalLen;
+        photoNextIndex = 0;
+        photoBytes.clear();
+        if (photoTotalLen > 0) {
+            photoBytes.reserve(photoTotalLen);
+        }
+        return true;
+    }
+
+    if (proto == PROTO_PHOTO) {
+        // payload: transferId(1) + idx(u16) + totalChunks(u16) + chunk...
+        if (len < 1 + 2 + 2) {
+            return true;
+        }
+        uint8_t tid = payload[0];
+        uint16_t idx = static_cast<uint16_t>(payload[1]) | (static_cast<uint16_t>(payload[2]) << 8);
+        uint16_t total = static_cast<uint16_t>(payload[3]) | (static_cast<uint16_t>(payload[4]) << 8);
+        const uint8_t* chunk = payload + 5;
+        uint16_t chunkLen = static_cast<uint16_t>(len - 5);
+
+        if (!photoActive || tid != photoTransferId) {
+            // 如果未收到 meta，也允许直接以首包启动（但没有总长度预分配）
+            photoTransferId = tid;
+            photoActive = true;
             photoTotal = total;
+            photoTotalLen = 0;
             photoNextIndex = 0;
             photoBytes.clear();
+        }
+
+        if (photoTotal == 0) {
+            photoTotal = total;
         }
 
         if (total == 0 || idx >= total) {
             return true;
         }
         if (idx < photoNextIndex) {
-            return true; // 重复包
+            return true; // 重复包（重传）
         }
         if (idx != photoNextIndex) {
-            return true; // 非预期乱序
+            return true; // 非预期乱序（stop-and-wait 下不应出现）
         }
 
         photoBytes.insert(photoBytes.end(), chunk, chunk + chunkLen);
         photoNextIndex++;
-        if (photoNextIndex == photoTotal) {
+
+        if (photoNextIndex == total) {
             WriteBytesToFile(photoBytes, PHOTO_PATH);
             NotifyImageCapturedFromNative(PHOTO_PATH);
-            photoSeqValid = false;
+            photoActive = false;
         }
         return true;
     }
