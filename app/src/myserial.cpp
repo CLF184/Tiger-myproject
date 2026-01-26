@@ -14,14 +14,16 @@
  */
 #include <iostream>
 #include <string>
+#include <algorithm>
+#include <iterator>
+#include <map>
 #include <vector>
-#include <deque>
 #include <fstream>
-#include <cstring>
-
 #include "serial_uart.h"
 #include "myserial.h"
 
+extern "C" {
+#include <semaphore.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -29,498 +31,225 @@
 #include <unistd.h>
 #include <poll.h>
 #include <errno.h>
-#include <time.h>
-
+}
 using namespace std;
 
 extern "C" void NotifyImageCapturedFromNative(const char* path);
 
-// 协议号定义
-static constexpr uint8_t PROTO_CMD = 0x10;     // 命令（需要 ACK）
-static constexpr uint8_t PROTO_SENSOR = 0x11;  // 传感器数据（不需要 ACK）
-static constexpr uint8_t PROTO_PHOTO = 0x12;   // 照片分包（需要 ACK）
-static constexpr uint8_t PROTO_PHOTO_META = 0x13; // 照片元信息（需要 ACK）
-static constexpr uint8_t PROTO_ACK = 0x7F;     // ACK
+#define UART_TTL_NAME "/dev/ttyS1"
+#define MAX_BUFFER_SIZE 1024
 
-static constexpr int ACK_TIMEOUT_MS = 300;
-static constexpr int MAX_RETRY_COUNT = 5;
+#define FRAME_HEAD 0xFE //帧头
+#define FRAME_END 0xFF  //帧尾
+#define ESC        0x7E //转义
+#define CAMERA_END 0x01 //相机
 
-static int g_fd = -1;
-static pthread_t g_rxThread;
-static pthread_t g_txThread;
+vector<unsigned char> data_buffer; //数据缓冲区
+int frame_len = 0;
+static int fd;
+pthread_t pid_read;
 
-// 传感器数据缓存（供 get_data_by_key 解析）
-static vector<unsigned char> g_sensorBuf;
-static int g_sensorLen = 0;
-static pthread_mutex_t g_sensorMutex = PTHREAD_MUTEX_INITIALIZER;
+//int recv[MAX_BUFFER_SIZE];
+pthread_mutex_t recv_mutex = PTHREAD_MUTEX_INITIALIZER;  // 初始化互斥锁
 
-// 发送队列（Stop-and-wait reliable sender）
-struct TxJob {
-    uint8_t proto;
-    vector<uint8_t> payload;
-    bool requireAck;
-};
+typedef struct {
+    char* buf;  // 数据缓冲区
+    int len;                   // 数据长度
+} SerialOutputParams;
 
-static deque<TxJob> g_txQueue;
-static pthread_mutex_t g_txMutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_txCond = PTHREAD_COND_INITIALIZER;
-
-static pthread_mutex_t g_sendMutex = PTHREAD_MUTEX_INITIALIZER;
-static uint8_t g_txSeq = 0;
-
-// ACK 等待状态
-static pthread_mutex_t g_ackMutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_ackCond = PTHREAD_COND_INITIALIZER;
-static bool g_waitingAck = false;
-static uint8_t g_waitAckProto = 0;
-static uint8_t g_waitAckSeq = 0;
-static bool g_ackOk = false;
-
-static inline bool ProtoRequiresAck(uint8_t proto)
-{
-    return proto == PROTO_CMD || proto == PROTO_PHOTO || proto == PROTO_PHOTO_META;
-}
-
-static uint16_t Crc16Ccitt(const uint8_t* data, size_t len)
-{
-    uint16_t crc = 0xFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= static_cast<uint16_t>(data[i]) << 8;
-        for (int b = 0; b < 8; b++) {
-            crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : (crc << 1);
-        }
-    }
-    return crc;
-}
-
-static void AppendEscaped(vector<uint8_t>& out, uint8_t b)
-{
-    if (b == FRAME_HEAD || b == FRAME_END || b == ESC) {
-        out.push_back(ESC);
-    }
-    out.push_back(b);
-}
-
-static vector<uint8_t> BuildFrame(uint8_t proto, uint8_t seq, const uint8_t* payload, uint16_t payloadLen)
-{
-    vector<uint8_t> raw;
-    raw.reserve(1 + 1 + 2 + payloadLen + 2);
-    raw.push_back(proto);
-    raw.push_back(seq);
-    raw.push_back(static_cast<uint8_t>(payloadLen & 0xFF));
-    raw.push_back(static_cast<uint8_t>((payloadLen >> 8) & 0xFF));
-    if (payloadLen > 0 && payload != nullptr) {
-        raw.insert(raw.end(), payload, payload + payloadLen);
-    }
-    uint16_t crc = Crc16Ccitt(raw.data(), raw.size());
-    raw.push_back(static_cast<uint8_t>(crc & 0xFF));
-    raw.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
-
-    vector<uint8_t> framed;
-    framed.reserve(raw.size() + 2);
-    framed.push_back(FRAME_HEAD);
-    for (uint8_t b : raw) {
-        AppendEscaped(framed, b);
-    }
-    framed.push_back(FRAME_END);
-    return framed;
-}
-
-static bool WriteAll(int fd, const uint8_t* buf, size_t len)
-{
-    size_t off = 0;
-    while (off < len) {
-        ssize_t n = write(fd, buf + off, len - off);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                usleep(1000);
-                continue;
-            }
-            return false;
-        }
-        off += static_cast<size_t>(n);
-    }
-    return true;
-}
-
-static void WriteBytesToFile(const vector<uint8_t>& bytes, const char* fileName)
+void WriteFrameToFile(const vector<uint8_t>& frameData, const char* fileName)
 {
     ofstream file(fileName, ios::binary | ios::trunc);
     if (!file) {
         cerr << "Failed to open file" << endl;
         return;
     }
-    if (!file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size())) {
+    
+    if (!file.write(reinterpret_cast<const char*>(frameData.data()), frameData.size())) {
         cerr << "Write failed" << endl;
     }
 }
 
-static void SendAck(uint8_t ackProto, uint8_t ackSeq)
+void *_serial_input_task(void* arg)// 串口读线程
 {
-    uint8_t payload[2] = { ackProto, ackSeq };
-    vector<uint8_t> frame = BuildFrame(PROTO_ACK, 0, payload, sizeof(payload));
-    pthread_mutex_lock(&g_sendMutex);
-    (void)WriteAll(g_fd, frame.data(), frame.size());
-    pthread_mutex_unlock(&g_sendMutex);
-}
-
-static bool WaitAck(uint8_t proto, uint8_t seq, int timeoutMs)
-{
-    pthread_mutex_lock(&g_ackMutex);
-    g_waitingAck = true;
-    g_waitAckProto = proto;
-    g_waitAckSeq = seq;
-    g_ackOk = false;
-
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += timeoutMs / 1000;
-    ts.tv_nsec += static_cast<long>(timeoutMs % 1000) * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) {
-        ts.tv_sec += 1;
-        ts.tv_nsec -= 1000000000L;
-    }
-
-    while (!g_ackOk) {
-        int rc = pthread_cond_timedwait(&g_ackCond, &g_ackMutex, &ts);
-        if (rc == ETIMEDOUT) {
-            break;
-        }
-    }
-
-    bool ok = g_ackOk;
-    g_waitingAck = false;
-    pthread_mutex_unlock(&g_ackMutex);
-    return ok;
-}
-
-static void* TxWorker(void*)
-{
-    while (true) {
-        TxJob job;
-        pthread_mutex_lock(&g_txMutex);
-        while (g_txQueue.empty()) {
-            pthread_cond_wait(&g_txCond, &g_txMutex);
-        }
-        job = std::move(g_txQueue.front());
-        g_txQueue.pop_front();
-        pthread_mutex_unlock(&g_txMutex);
-
-        uint8_t seq;
-        pthread_mutex_lock(&g_sendMutex);
-        seq = ++g_txSeq;
-        pthread_mutex_unlock(&g_sendMutex);
-
-        int retries = 0;
-        while (true) {
-            vector<uint8_t> frame = BuildFrame(job.proto, seq, job.payload.data(), static_cast<uint16_t>(job.payload.size()));
-            pthread_mutex_lock(&g_sendMutex);
-            bool okWrite = WriteAll(g_fd, frame.data(), frame.size());
-            pthread_mutex_unlock(&g_sendMutex);
-
-            if (!job.requireAck) {
-                break;
-            }
-
-            bool okAck = okWrite && WaitAck(job.proto, seq, ACK_TIMEOUT_MS);
-            if (okAck) {
-                break;
-            }
-
-            retries++;
-            if (retries > MAX_RETRY_COUNT) {
-                break;
-            }
-        }
-    }
-    return nullptr;
-}
-
-static bool HandleFrame(const vector<uint8_t>& raw)
-{
-    // raw = [proto, seq, lenLo, lenHi, payload..., crcLo, crcHi]
-    if (raw.size() < 1 + 1 + 2 + 2) {
-        return false;
-    }
-    uint8_t proto = raw[0];
-    uint8_t seq = raw[1];
-    uint16_t len = static_cast<uint16_t>(raw[2]) | (static_cast<uint16_t>(raw[3]) << 8);
-    if (raw.size() != static_cast<size_t>(1 + 1 + 2 + len + 2)) {
-        return false;
-    }
-    const uint8_t* payload = (len > 0) ? &raw[4] : nullptr;
-    uint16_t rxCrc = static_cast<uint16_t>(raw[4 + len]) | (static_cast<uint16_t>(raw[4 + len + 1]) << 8);
-    uint16_t calc = Crc16Ccitt(raw.data(), 4 + len);
-    if (rxCrc != calc) {
-        return false;
-    }
-
-    if (proto == PROTO_ACK) {
-        if (len < 2) {
-            return true;
-        }
-        uint8_t ackProto = payload[0];
-        uint8_t ackSeq = payload[1];
-
-        pthread_mutex_lock(&g_ackMutex);
-        if (g_waitingAck && ackProto == g_waitAckProto && ackSeq == g_waitAckSeq) {
-            g_ackOk = true;
-            pthread_cond_broadcast(&g_ackCond);
-        }
-        pthread_mutex_unlock(&g_ackMutex);
-        return true;
-    }
-
-    if (ProtoRequiresAck(proto)) {
-        SendAck(proto, seq);
-    }
-
-    // 传感器数据：直接覆盖缓存
-    if (proto == PROTO_SENSOR) {
-        pthread_mutex_lock(&g_sensorMutex);
-        g_sensorBuf.assign(payload, payload + len);
-        g_sensorLen = static_cast<int>(len);
-        pthread_mutex_unlock(&g_sensorMutex);
-        return true;
-    }
-
-    // 照片分包重组（transferId 用于将多帧归并为同一张照片；seq 仅用于 ACK 匹配）
-    static uint8_t photoTransferId = 0;
-    static bool photoActive = false;
-    static uint16_t photoTotal = 0;
-    static uint32_t photoTotalLen = 0;
-    static uint16_t photoNextIndex = 0;
-    static vector<uint8_t> photoBytes;
-
-    if (proto == PROTO_PHOTO_META) {
-        // payload: transferId(1) + totalChunks(u16) + totalLen(u32)
-        if (len < 1 + 2 + 4) {
-            return true;
-        }
-        uint8_t tid = payload[0];
-        uint16_t total = static_cast<uint16_t>(payload[1]) | (static_cast<uint16_t>(payload[2]) << 8);
-        uint32_t totalLen = static_cast<uint32_t>(payload[3]) |
-                            (static_cast<uint32_t>(payload[4]) << 8) |
-                            (static_cast<uint32_t>(payload[5]) << 16) |
-                            (static_cast<uint32_t>(payload[6]) << 24);
-
-        photoTransferId = tid;
-        photoActive = true;
-        photoTotal = total;
-        photoTotalLen = totalLen;
-        photoNextIndex = 0;
-        photoBytes.clear();
-        if (photoTotalLen > 0) {
-            photoBytes.reserve(photoTotalLen);
-        }
-        return true;
-    }
-
-    if (proto == PROTO_PHOTO) {
-        // payload: transferId(1) + idx(u16) + totalChunks(u16) + chunk...
-        if (len < 1 + 2 + 2) {
-            return true;
-        }
-        uint8_t tid = payload[0];
-        uint16_t idx = static_cast<uint16_t>(payload[1]) | (static_cast<uint16_t>(payload[2]) << 8);
-        uint16_t total = static_cast<uint16_t>(payload[3]) | (static_cast<uint16_t>(payload[4]) << 8);
-        const uint8_t* chunk = payload + 5;
-        uint16_t chunkLen = static_cast<uint16_t>(len - 5);
-
-        if (!photoActive || tid != photoTransferId) {
-            // 如果未收到 meta，也允许直接以首包启动（但没有总长度预分配）
-            photoTransferId = tid;
-            photoActive = true;
-            photoTotal = total;
-            photoTotalLen = 0;
-            photoNextIndex = 0;
-            photoBytes.clear();
-        }
-
-        if (photoTotal == 0) {
-            photoTotal = total;
-        }
-
-        if (total == 0 || idx >= total) {
-            return true;
-        }
-        if (idx < photoNextIndex) {
-            return true; // 重复包（重传）
-        }
-        if (idx != photoNextIndex) {
-            return true; // 非预期乱序（stop-and-wait 下不应出现）
-        }
-
-        photoBytes.insert(photoBytes.end(), chunk, chunk + chunkLen);
-        photoNextIndex++;
-
-        if (photoNextIndex == total) {
-            WriteBytesToFile(photoBytes, PHOTO_PATH);
-            NotifyImageCapturedFromNative(PHOTO_PATH);
-            photoActive = false;
-        }
-        return true;
-    }
-
-    return true;
-}
-
-static void* RxWorker(void*)
-{
-    int state = 0; // 0: wait head, 1: in frame, 2: escape
-    vector<uint8_t> raw;
+    int count = 0;
+    int status = 0;
+    int ret = ERR;
+    //int recv_temp[MAX_BUFFER_SIZE];
+    unsigned char buf = 0;
+    vector<unsigned char> data_buffer_temp;
 
     struct pollfd pfd;
-    pfd.fd = g_fd;
+    pfd.fd = fd;
     pfd.events = POLLIN;
     pfd.revents = 0;
 
-    while (true) {
+    while (1) {
         pfd.revents = 0;
-        int poll_ret = poll(&pfd, 1, 1000);
+        int poll_ret = poll(&pfd, 1, 1000); // 1s超时，避免线程永久阻塞
         if (poll_ret == 0) {
-            continue;
+            continue; // timeout
         }
         if (poll_ret < 0) {
             if (errno == EINTR) {
                 continue;
             }
+            perror("poll error");
             break;
         }
+
         if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            perror("poll revents error");
             break;
         }
+
         if (!(pfd.revents & POLLIN)) {
             continue;
         }
 
-        uint8_t b = 0;
-        ssize_t n = read(g_fd, &b, 1);
-        if (n == 0) {
+        ret = read(fd, &buf, 1);
+        //printf("%02X\n", buf);
+        if (ret == 0) {
+            // 设备被关闭
             break;
         }
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (ret == ERR) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 continue;
             }
-            break;
+            perror("read error");
+            break;  // 读取失败，退出循环
         }
-
-        if (state == 0) {
-            if (b == FRAME_HEAD) {
-                raw.clear();
-                state = 1;
+        if(status==0){ //等待帧头
+            if(buf==FRAME_HEAD){
+                status = 1; //切换-接收数据
+                count = 0;
+                data_buffer_temp.clear(); // 清空临时缓冲区
             }
-            continue;
         }
-        if (state == 2) {
-            raw.push_back(b);
-            state = 1;
-            continue;
+        else if(status==1){ //接收数据
+            if (buf == ESC) {
+                status=2;  //切换-处理转义
+            }
+            else if(buf==FRAME_END){ //结束接收
+                //cout<<endl;
+                frame_len = count;
+                status = 0; //切换-等待帧头
+                pthread_mutex_lock(&recv_mutex);  // 加锁
+                data_buffer.assign(data_buffer_temp.begin(), data_buffer_temp.end()); // 将临时缓冲区的数据复制到数据缓冲区
+                pthread_mutex_unlock(&recv_mutex);  // 解锁
+            }
+            else if(buf==CAMERA_END){
+                //cout<<endl;
+                status = 0; //切换-等待帧头
+                //frame_len = count;
+                WriteFrameToFile(data_buffer_temp,PHOTO_PATH);
+                cout<< "Frame received and written to file." <<endl;
+                NotifyImageCapturedFromNative(PHOTO_PATH);
+            }
+            else {
+                data_buffer_temp.push_back(buf); // 将数据存入临时缓冲区
+                //recv_temp[count] = buf;
+                count++;
+            }
         }
-
-        // state == 1
-        if (b == ESC) {
-            state = 2;
-            continue;
+        else if(status==2){ //处理转义
+            data_buffer_temp.push_back(buf); // 将数据存入临时缓冲区
+            //recv_temp[count] = buf;
+            count++;
+            status = 1; //切换-接收数据
         }
-        if (b == FRAME_HEAD) {
-            raw.clear();
-            state = 1;
-            continue;
-        }
-        if (b == FRAME_END) {
-            (void)HandleFrame(raw);
-            raw.clear();
-            state = 0;
-            continue;
-        }
-        raw.push_back(b);
     }
-    return nullptr;
+    return NULL;
 }
 
-unsigned char* return_recv(int* len)
+unsigned char* return_recv(int *len)
 {
-    if (len == nullptr) {
-        return nullptr;
-    }
+    *len = frame_len;
+    unsigned char *temp; // 临时缓冲区
+    
+    temp = new unsigned char[data_buffer.size()]; // 动态分配内存
 
-    pthread_mutex_lock(&g_sensorMutex);
-    int localLen = g_sensorLen;
-    size_t sz = g_sensorBuf.size();
-    pthread_mutex_unlock(&g_sensorMutex);
+    pthread_mutex_lock(&recv_mutex);  // 加锁
+    memcpy(temp, &data_buffer[0], data_buffer.size() * sizeof(data_buffer[0]));
+    pthread_mutex_unlock(&recv_mutex);  // 解锁
 
-    *len = localLen;
-    if (sz == 0 || localLen <= 0) {
-        return nullptr;
-    }
-
-    unsigned char* temp = new unsigned char[sz];
-    pthread_mutex_lock(&g_sensorMutex);
-    memcpy(temp, g_sensorBuf.data(), sz);
-    pthread_mutex_unlock(&g_sensorMutex);
     return temp;
 }
 
-float get_data_by_key(char* key)
-{
+float get_data_by_key(char *key){
     int len = 0;
     unsigned char* data = return_recv(&len);
-    if (data == nullptr || len <= 0) {
-        delete[] data;
-        return 0.0f;
+    
+    if (data == NULL || len <= 0) {
+        delete[] data;  // Free memory if data was allocated
+        return 0.0f;    // Return default value if no data
     }
 
+    // Convert to C-style string for parsing
     char dataStr[MAX_BUFFER_SIZE] = {0};
-    memcpy(dataStr, data, (len < MAX_BUFFER_SIZE - 1) ? len : MAX_BUFFER_SIZE - 1);
-    delete[] data;
+    memcpy(dataStr, data, (len < MAX_BUFFER_SIZE-1) ? len : MAX_BUFFER_SIZE-1);
+    delete[] data;  // Free the allocated memory
 
     float value = 0.0f;
     char searchKey[32] = {0};
-    sprintf(searchKey, "%s:", key);
+    sprintf(searchKey, "%s:", key);  // Format search key with colon
 
     char* position = strstr(dataStr, searchKey);
-    if (position != nullptr) {
+    if (position != NULL) {
         sscanf(position, "%*[^:]:%f", &value);
     }
+
     return value;
 }
 
-void write_uart(const char* buf, int len)
+// 串口写线程
+void *_serial_output_task(void *arg)
 {
-    if (buf == nullptr || len <= 0) {
-        return;
-    }
-    TxJob job;
-    job.proto = PROTO_CMD;
-    job.requireAck = true;
-    job.payload.assign(reinterpret_cast<const uint8_t*>(buf), reinterpret_cast<const uint8_t*>(buf) + len);
+    SerialOutputParams *params = (SerialOutputParams *)arg;  // 将参数转换为结构体指针
+    const char* buf = params->buf;                 // 获取 buf
+    int len = params->len;                                 // 获取 len
 
-    pthread_mutex_lock(&g_txMutex);
-    g_txQueue.push_back(std::move(job));
-    pthread_cond_signal(&g_txCond);
-    pthread_mutex_unlock(&g_txMutex);
+    write(fd, buf, len);
+
+    delete[] params->buf;  // 释放动态分配的内存
+    delete params;  // 释放动态分配的内存
+    return NULL;
 }
 
-void init_uart()
+
+void write_uart(const char* buf, int len)
 {
+    pthread_t pid_write;
+
+    // 动态分配结构体并填充参数
+    SerialOutputParams *params = new SerialOutputParams;
+    if (params == NULL) {
+        perror("malloc failed");
+        return;
+    }
+    
+    params->buf = new char[len];
+    memcpy(params->buf, buf, len);
+    params->len = len;
+
+    // 创建线程并传递参数
+    pthread_create(&pid_write, NULL, _serial_output_task, (void *)params);
+}
+
+void init_uart(){
     int ret = ERR;
-    g_fd = open(UART_TTL_NAME, O_RDWR | O_NONBLOCK);
-    if (g_fd == ERR) {
+
+    fd = open(UART_TTL_NAME, O_RDWR | O_NONBLOCK);
+    if (fd == ERR) {
         perror("open file fail\n");
         exit(-1);
     }
-
-    ret = uart_init(g_fd, 115200L);
+    ret = uart_init(fd, 115200L);
     if (ret == ERR) {
         perror("uart init error\n");
         exit(-1);
     }
 
-    pthread_create(&g_rxThread, nullptr, RxWorker, nullptr);
-    pthread_create(&g_txThread, nullptr, TxWorker, nullptr);
+    pthread_create(&pid_read, NULL, _serial_input_task, NULL);
 }
