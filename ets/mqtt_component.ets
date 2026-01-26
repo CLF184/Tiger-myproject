@@ -1,6 +1,5 @@
 import prompt from '@ohos.prompt';
 import { mqttService, MqttConnectionStatus } from './mqtt_service';
-import fs from '@ohos.file.fs';
 import image from '@ohos.multimedia.image';
 
 // 定义传感器接口
@@ -12,13 +11,6 @@ export interface Sensors {
   formaldehyde: number;
   tvoc: number;
   co2: number;
-}
-
-// 定义传感器数据接口
-export interface SensorData {
-  deviceId: string;
-  timestamp: string;
-  sensors: Sensors;
 }
 
 // 定义提示消息选项接口
@@ -53,7 +45,7 @@ export struct MqttSettings {
   @Prop tvoc: number;
   @Prop co2: number;
   @Prop pixelMap: image.PixelMap | null = null;  // 添加接收PixelMap的属性
-  @Prop imageUri: string = '';  // 添加接收图片路径的属性
+  @Prop imageUri: string = '';  // 仅用于 UI 预览/提示（发布由原生固定读取 PHOTO_PATH）
 
   // 用于定时上传的定时器ID
   private uploadTimer: number = -1;
@@ -212,24 +204,8 @@ export struct MqttSettings {
     this.isUploading = true;
     
     try {
-      // 构建传感器数据对象，符合SensorData接口
-      const sensors: Sensors = {
-        soilMoisture: this.soilMoisture,
-        lightLevel: this.lightLevel,
-        temperature: this.temperature,
-        humidity: this.humidity,
-        formaldehyde: this.formaldehyde,
-        tvoc: this.tvoc,
-        co2: this.co2
-      };
-      
-      const sensorData: SensorData = {
-        deviceId: this.clientId,
-        timestamp: new Date().toISOString(),
-        sensors: sensors
-      };
-      
-      const success = await mqttService.uploadSensorData(sensorData);
+      // 传感器采集与 JSON 组包由原生侧完成（格式与 Qt 客户端一致）
+      const success = await mqttService.uploadSensorData();
       
       if (success) {
         this.lastUploadTime = new Date().toLocaleTimeString();
@@ -272,16 +248,6 @@ export struct MqttSettings {
       return; // 避免重复上传
     }
     
-    // 检查是否有图片路径
-    if (!this.imageUri) {
-      const toastOptions: ToastOptions = {
-        message: '没有可用的图片',
-        duration: 2000
-      };
-      prompt.showToast(toastOptions);
-      return;
-    }
-    
     this.isImageUploading = true;
     
     try {
@@ -292,8 +258,8 @@ export struct MqttSettings {
       };
       prompt.showToast(loadingToast);
       
-      // 直接传递图片文件路径给MQTT服务
-      const success = await mqttService.uploadImage(this.imageUri);
+      // 原生侧固定读取 PHOTO_PATH 并做 Base64 编码后发布
+      const success = await mqttService.uploadImage();
       
       if (success) {
         this.lastImageUploadTime = new Date().toLocaleTimeString();
@@ -494,7 +460,7 @@ export struct MqttSettings {
             Text('上传当前图片').fontSize(14)
           }
         }
-        .enabled(this.isConnected && !this.isImageUploading && this.imageUri !== '')
+        .enabled(this.isConnected && !this.isImageUploading)
         .onClick(() => {
           this.uploadImage();
         })
@@ -505,10 +471,9 @@ export struct MqttSettings {
       }.width('100%').justifyContent(FlexAlign.SpaceBetween).margin({ top: 8 })
       
       if (this.imageUri) {
-        Text(`图片可用: ${this.imageUri.split('/').pop()}`).fontSize(12).fontColor('#4CAF50').margin({ top: 4 })
-      } else {
-        Text('无可用图片').fontSize(12).fontColor('#F44336').margin({ top: 4 })
+        Text(`预览图片: ${this.imageUri.split('/').pop()}`).fontSize(12).fontColor('#4CAF50').margin({ top: 4 })
       }
+      Text('发送图片时：原生读取 PHOTO_PATH 并写入传感器JSON的 image 字段').fontSize(12).fontColor('#666666').margin({ top: 4 })
     }
     .width('90%')
     .padding(16)

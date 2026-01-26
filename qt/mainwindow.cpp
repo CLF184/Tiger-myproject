@@ -330,7 +330,6 @@ void MainWindow::showMqttConfigDialog()
         mqttBrokerAddress = dialog.brokerAddress();
         mqttBrokerPort = dialog.brokerPort();
         mqttDataTopic = dialog.dataTopicName();
-        mqttImageTopic = dialog.imageTopicName();
 
         // 如果所有必填字段都已填写，则连接MQTT
         if (!mqttBrokerAddress.isEmpty() && !mqttDataTopic.isEmpty()) {
@@ -369,16 +368,6 @@ void MainWindow::onMQTTConnected()
     } else {
         qDebug() << "成功订阅数据主题:" << mqttDataTopic;
     }
-
-    // 如果提供了图片主题，则订阅
-    if (!mqttImageTopic.isEmpty()) {
-        QMqttSubscription *imageSubscription = mqttClient->subscribe(QMqttTopicFilter(mqttImageTopic));
-        if (!imageSubscription) {
-            qDebug() << "订阅图片主题失败";
-        } else {
-            qDebug() << "成功订阅图片主题:" << mqttImageTopic;
-        }
-    }
 }
 
 void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTopicName &topic)
@@ -386,40 +375,7 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
     // 检查主题并处理消息
     QString topicStr = topic.name();
 
-    if (!mqttImageTopic.isEmpty() && topicStr == mqttImageTopic) {
-        // 处理图像数据
-        try {
-            // 首先尝试将接收到的消息解码为Base64格式
-            QByteArray imageData = QByteArray::fromBase64(message);
-            
-            QImage image;
-            int maxWidth = imageLabel->width() - 40; // 减去padding
-
-            if (image.loadFromData(imageData)) {
-                if (image.width() > maxWidth) {
-                    image = image.scaledToWidth(maxWidth, Qt::SmoothTransformation);
-                }
-                imageLabel->setPixmap(QPixmap::fromImage(image));
-            } else {
-                // 如果解码失败，尝试直接使用原始数据（向后兼容）
-                if (image.loadFromData(message)) {
-                    if (image.width() > maxWidth) {
-                        image = image.scaledToWidth(maxWidth, Qt::SmoothTransformation);
-                    }
-                    imageLabel->setPixmap(QPixmap::fromImage(image));
-                } else {
-                    imageLabel->setText("图像解码失败");
-                    qDebug() << "图像解码失败：无法从Base64数据或原始数据加载图像";
-                }
-            }
-        } catch (const std::exception& e) {
-            qDebug() << "处理图像数据时出错: " << e.what();
-            imageLabel->setText("图像处理错误");
-        } catch (...) {
-            qDebug() << "处理图像数据时出现未知错误";
-            imageLabel->setText("图像处理错误");
-        }
-    } else if (topicStr == mqttDataTopic) {
+    if (topicStr == mqttDataTopic) {
         // 处理传感器数据
         try {
             QJsonDocument doc = QJsonDocument::fromJson(message);
@@ -451,6 +407,23 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
             double formaldehyde = sensors["formaldehyde"].toDouble();
             double tvoc = sensors["tvoc"].toDouble();
             int co2 = sensors["co2"].toInt();
+
+            // 可选：同一条 JSON 中携带 Base64 图片
+            if (obj.contains("image") && obj["image"].isString()) {
+                const QByteArray imageBase64 = obj["image"].toString().toUtf8();
+                const QByteArray imageData = QByteArray::fromBase64(imageBase64);
+
+                QImage image;
+                int maxWidth = imageLabel->width() - 40;
+                if (image.loadFromData(imageData)) {
+                    if (image.width() > maxWidth) {
+                        image = image.scaledToWidth(maxWidth, Qt::SmoothTransformation);
+                    }
+                    imageLabel->setPixmap(QPixmap::fromImage(image));
+                } else {
+                    qDebug() << "图像解码失败：无法从 JSON.image 的 Base64 数据加载图像";
+                }
+            }
 
             // 更新UI
             labelDeviceId->setText(QString("<b>🔌 设备ID:</b><br><span style='font-size:16px;'>%1</span>").arg(deviceId));

@@ -1,5 +1,4 @@
 import myproject from '@ohos.myproject';
-import fs from '@ohos.file.fs';
 import common from '@ohos.app.ability.common';
 import image from '@ohos.multimedia.image';  // 添加图片处理模块导入
 import prompt from '@ohos.prompt';
@@ -33,7 +32,6 @@ struct Index {
   @State imageUri: string = '';  // 保留原有变量用于检查文件路径
   @State pixelMap: image.PixelMap | null = null;  // 添加用于存储 PixelMap 的状态变量
   @State imageLoading: boolean = false;  // 图片加载状态
-  @State lastImageRefreshTime: number = 0; // 跟踪最后一次强制刷新图片的时间
 
   // 添加 LLaMA 相关状态变量
   @State llamaHost: string = '192.168.31.5';
@@ -52,10 +50,8 @@ struct Index {
 
   private timer: number = -1;
   private scroller: Scroller = new Scroller();
-  private imageTimer: number = -1;  // 用于定时检查图片更新
   private pixelMapTimeout: number = -1;  // 添加超时计时器
   private isPixelMapConverting: boolean = false;  // 添加转换状态跟踪
-  private forceRefreshInterval: number = 3000; // 强制刷新图片的间隔时间（3秒）
 
   aboutToAppear() {
     // 延迟初始化，给系统一些时间准备好硬件接口
@@ -68,36 +64,18 @@ struct Index {
       this.updateSensorData();
     }, 1000);
 
-    // 启动定时任务，每2秒检查一次图片是否更新
-    this.imageTimer = setInterval(() => {
-      this.checkAndLoadImage();
-    }, 2000);
+    // 注册底层图片接收完成回调（替代轮询）
+    try {
+      myproject.onImageCaptured((path: string) => {
+        this.imageUri = path;
+        this.loadPixelMap(path);
+        console.info(`底层回调刷新图片: ${path}`);
+      });
+    } catch (error) {
+      console.error(`注册图片回调失败: ${error}`);
+    }
 
     this.clearLlamaHistory();
-  }
-
-  // 检查并加载图片（使用 PixelMap）
-  checkAndLoadImage() {
-    try {
-      const imagePath = filesDir + '/output.jpeg';
-      const currentTime = Date.now();
-
-      // 判断是否需要强制刷新图片（每3秒强制刷新一次）
-      const shouldForceRefresh = (currentTime - this.lastImageRefreshTime) >= this.forceRefreshInterval;
-
-      fs.access(imagePath)
-        .then(() => {
-          // 图片存在，当路径变更或需要强制刷新时，重新加载图片
-          if (this.imageUri !== imagePath || shouldForceRefresh) {
-            this.imageUri = imagePath;
-            this.loadPixelMap(imagePath);
-            this.lastImageRefreshTime = currentTime; // 更新最后一次刷新时间
-            console.info(`${shouldForceRefresh ? '强制刷新' : '加载新'}图片: ${this.imageUri}`);
-          }
-        })
-    } catch (error) {
-      console.error(`检查图片异常: ${error}`);
-    }
   }
 
   // 加载图片到 PixelMap
@@ -187,9 +165,11 @@ struct Index {
       this.timer = -1;
     }
 
-    if (this.imageTimer !== -1) {
-      clearInterval(this.imageTimer);
-      this.imageTimer = -1;
+    // 取消底层回调
+    try {
+      myproject.offImageCaptured();
+    } catch (error) {
+      console.error(`取消图片回调失败: ${error}`);
     }
 
     if (this.pixelMapTimeout !== -1) {

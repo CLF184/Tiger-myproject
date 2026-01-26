@@ -27,6 +27,9 @@
 #define ESC 0x7E         // 转义
 #define CAMERA_END 0x01  // 相机
 
+// 相机图片输出路径（串口相机接收后写入该路径）
+#define PHOTO_PATH "/data/storage/el2/base/haps/entry/files/output.jpeg"
+
 
 /**
  * @brief 初始化UART设备并启动读线程

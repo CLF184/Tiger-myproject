@@ -20,13 +20,11 @@ public:
     QString brokerAddress() const;
     int brokerPort() const;
     QString dataTopicName() const;
-    QString imageTopicName() const;
 
 private:
     QLineEdit *brokerAddressEdit;
     QLineEdit *brokerPortEdit;
     QLineEdit *dataTopicEdit;
-    QLineEdit *imageTopicEdit;
     QScrollArea *scrollArea;  // 添加滚动区域
     QWidget *contentWidget;   // 内容容器
     

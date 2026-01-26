@@ -23,13 +23,11 @@ MqttConfigDialog::MqttConfigDialog(QWidget *parent) : QDialog(parent)
     brokerAddressEdit = new QLineEdit(this);
     brokerPortEdit = new QLineEdit(this);
     dataTopicEdit = new QLineEdit(this);
-    imageTopicEdit = new QLineEdit(this);
     
     // 设置输入框大小策略
     brokerAddressEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     brokerPortEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     dataTopicEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    imageTopicEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     
     // 设置默认值
     brokerPortEdit->setText("1883");
@@ -38,7 +36,6 @@ MqttConfigDialog::MqttConfigDialog(QWidget *parent) : QDialog(parent)
     formLayout->addRow("MQTT 服务器地址:", brokerAddressEdit);
     formLayout->addRow("MQTT 服务器端口:", brokerPortEdit);
     formLayout->addRow("数据主题:", dataTopicEdit);
-    formLayout->addRow("图片主题:", imageTopicEdit);
     
     // 创建按钮
     QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -63,7 +60,6 @@ MqttConfigDialog::MqttConfigDialog(QWidget *parent) : QDialog(parent)
     brokerAddressEdit->installEventFilter(this);
     brokerPortEdit->installEventFilter(this);
     dataTopicEdit->installEventFilter(this);
-    imageTopicEdit->installEventFilter(this);
     
     // 加载保存的设置
     loadSettings();
@@ -112,11 +108,6 @@ QString MqttConfigDialog::dataTopicName() const
     return dataTopicEdit->text();
 }
 
-QString MqttConfigDialog::imageTopicName() const
-{
-    return imageTopicEdit->text();
-}
-
 void MqttConfigDialog::loadSettings()
 {
     QSettings settings("YourOrganization", "MQTTMonitor");
@@ -125,7 +116,6 @@ void MqttConfigDialog::loadSettings()
     brokerAddressEdit->setText(settings.value("mqtt/brokerAddress", "broker.emqx.io").toString());
     brokerPortEdit->setText(settings.value("mqtt/brokerPort", "1883").toString());
     dataTopicEdit->setText(settings.value("mqtt/dataTopic", "ciallo_ohos/sensors").toString());
-    imageTopicEdit->setText(settings.value("mqtt/imageTopic", "ciallo_ohos/image").toString());
 }
 
 void MqttConfigDialog::saveSettings()
@@ -135,7 +125,6 @@ void MqttConfigDialog::saveSettings()
     settings.setValue("mqtt/brokerAddress", brokerAddress());
     settings.setValue("mqtt/brokerPort", brokerPort());
     settings.setValue("mqtt/dataTopic", dataTopicName());
-    settings.setValue("mqtt/imageTopic", imageTopicName());
 }
 
 void MqttConfigDialog::setupAndroidSpecific()

@@ -3,7 +3,10 @@ import("//build/ohos/ndk/ndk.gni")
 
 ohos_shared_library("myproject_napi") {
   include_dirs = [ 
-    "inc",
+    "hal/inc",
+    "drivers/inc",
+    "app/inc",
+    "third_party/MQTT-C/include",
     "//drivers/hdf_core/framework/include",
     "//drivers/hdf_core/framework/include/osal",
     "//drivers/hdf_core/framework/include/platform",
@@ -15,19 +18,33 @@ ohos_shared_library("myproject_napi") {
 
   sources = [
     "myproject_napi.cpp",
-    "src/buzzer_control.cpp",
-    "src/fan_control.cpp",
-    "src/led_control.cpp",
-    "src/light_sensor.cpp",
-    "src/pump_control.cpp",
-    "src/serial_uart.c",
-    "src/sg90.cpp",
-    "src/soil_moisture.cpp",
-    "src/myserial.cpp",
-    "src/um_adc.c",
-    "src/um_pwm.c",
-    "src/um_gpio.c",
-    "src/llama_client.cpp"
+    "napi/buzzer_napi.cpp",
+    "napi/fan_napi.cpp",
+    "napi/led_napi.cpp",
+    "napi/light_sensor_napi.cpp",
+    "napi/llama_napi.cpp",
+    "napi/mqtt_napi.cpp",
+    "napi/pump_napi.cpp",
+    "napi/serial_napi.cpp",
+    "napi/sg90_napi.cpp",
+    "napi/soil_moisture_napi.cpp",
+    "hal/src/serial_uart.c",
+    "hal/src/um_adc.c",
+    "hal/src/um_gpio.c",
+    "hal/src/um_pwm.c",
+    "third_party/MQTT-C/src/mqtt.c",
+    "third_party/MQTT-C/src/mqtt_pal.c",
+    "drivers/src/buzzer_control.cpp",
+    "drivers/src/fan_control.cpp",
+    "drivers/src/led_control.cpp",
+    "drivers/src/light_sensor.cpp",
+    "drivers/src/pump_control.cpp",
+    "drivers/src/sg90.cpp",
+    "drivers/src/soil_moisture.cpp",
+    "app/src/myserial.cpp",
+    "app/src/llama_client.cpp",
+    "app/src/mqttc_client.cpp",
+    "app/src/mqtt_payload_builder.cpp"
   ]
 
   #deps = [ "//foundation/arkui/napi:ace_napi" ]

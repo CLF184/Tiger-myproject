@@ -98,6 +98,5 @@ private:
     QString mqttBrokerAddress;
     int mqttBrokerPort;
     QString mqttDataTopic;
-    QString mqttImageTopic;
 };
 #endif // MAINWINDOW_H

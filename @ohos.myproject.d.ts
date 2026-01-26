@@ -98,6 +98,19 @@ declare namespace myproject {
     function getDataByKey(key: string): number;
 
     /**
+     * 注册回调：当底层图片接收完成并写入文件后触发
+     * @param callback 回调入参为图片文件路径（例如 filesDir/output.jpeg）
+     * @returns 0表示成功，负数表示失败
+     */
+    function onImageCaptured(callback: (path: string) => void): number;
+
+    /**
+     * 取消注册图片回调
+     * @returns 0表示成功
+     */
+    function offImageCaptured(): number;
+
+    /**
      * 向LLaMA服务器发送请求并获取回复
      * @param prompt 提示文本
      * @returns Promise，解析为生成的回复文本或null（如果请求失败）
@@ -120,6 +133,38 @@ declare namespace myproject {
      * @returns 0表示成功，-1表示LlamaClient未初始化
      */
     function clearLlamaHistory(): number;
+
+    /**
+     * 配置MQTT连接参数
+     * @param brokerUrl 例如 tcp://host:1883
+     * @param clientId 作为 deviceId 使用
+     * @param username 用户名（可选）
+     * @param password 密码（可选）
+     * @returns 0表示成功，负数表示参数错误
+     */
+    function configMqtt(brokerUrl: string, clientId: string, username?: string, password?: string): number;
+
+    /**
+     * 连接MQTT
+     */
+    function connectMqtt(): Promise<boolean>;
+
+    /**
+     * 断开MQTT
+     */
+    function disconnectMqtt(): number;
+
+    /**
+     * 当前是否已连接
+     */
+    function isMqttConnected(): boolean;
+
+    /**
+     * 发布消息
+     * - haveImage=false: 原生侧采集传感器并按 Qt 客户端所需 JSON 格式发布
+     * - haveImage=true: 原生侧读取 PHOTO_PATH，Base64 后作为 JSON 的可选字段 image 一并发布
+     */
+    function publishMqtt(topic: string, haveImage: boolean, qos?: number): Promise<boolean>;
 }
 
 export default myproject;
