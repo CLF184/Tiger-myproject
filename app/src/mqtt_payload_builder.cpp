@@ -14,7 +14,7 @@
 
 #include "light_sensor.h"
 #include "myserial.h" // get_data_by_key + PHOTO_PATH
-#include "soil_moisture.h"
+#include "auto_control.h" // control::AutoControlThresholds / GetThresholds
 
 namespace mqttc {
 
@@ -23,6 +23,11 @@ static std::string g_deviceId;
 void SetMqttPayloadDeviceId(const std::string &deviceId)
 {
     g_deviceId = deviceId;
+}
+
+std::string GetMqttPayloadDeviceId()
+{
+    return g_deviceId;
 }
 
 static std::string JsonEscape(const std::string &in)
@@ -155,10 +160,8 @@ bool BuildSensorPayloadJson(bool includeImage, std::string &outJson, std::string
     }
 
     // Read sensors (best-effort; keep 0 if failed)
-    int soilMoisture = 0;
-    if (soil_moisture_read_raw(&soilMoisture) != SOIL_MOISTURE_OK) {
-        soilMoisture = 0;
-    }
+    float soilMoistureF = get_data_by_key(const_cast<char *>("SoilHumi"));
+    int soilMoisture = static_cast<int>(soilMoistureF + (soilMoistureF >= 0 ? 0.5f : -0.5f));
 
     int lightLevel = 0;
     if (light_sensor_read(&lightLevel) != 0) {
@@ -171,20 +174,62 @@ bool BuildSensorPayloadJson(bool includeImage, std::string &outJson, std::string
     float tvoc = get_data_by_key(const_cast<char *>("TVOC"));
     float co2F = get_data_by_key(const_cast<char *>("CO_2"));
 
+    // 新增土壤多参数（由 ESP 返回的扩展字段）
+    float soilTemp = get_data_by_key(const_cast<char *>("SoilTemp"));
+    float ec = get_data_by_key(const_cast<char *>("EC"));
+    float ph = get_data_by_key(const_cast<char *>("pH"));
+    float n = get_data_by_key(const_cast<char *>("N"));
+    float p = get_data_by_key(const_cast<char *>("P"));
+    float k = get_data_by_key(const_cast<char *>("K"));
+    float salt = get_data_by_key(const_cast<char *>("Salt"));
+    float tds = get_data_by_key(const_cast<char *>("TDS"));
+
+    // 简单告警判断：根据 EC、pH、N、P、K 是否超出配置的上下限给出 alarm 标志
+    // alarm = 0 表示无告警；>0 表示存在至少一项超限（当前使用 1/0 即可，后续可扩展为位掩码）。
+    int alarm = 0;
+
+    auto in_range_or_unset = [](float value, double minV, double maxV) {
+        // 若 min/max 均为 0，则认为未配置该项，不做告警
+        if (minV == 0.0 && maxV == 0.0) {
+            return true;
+        }
+        if (value < static_cast<float>(minV) || value > static_cast<float>(maxV)) {
+            return false;
+        }
+        return true;
+    };
+
+    // 读取当前配置的养分/酸碱报警阈值
+    control::AutoControlThresholds thresholds = control::GetThresholds();
+
+    if (!in_range_or_unset(ph, thresholds.ph_min, thresholds.ph_max)) alarm = 1;
+    if (!in_range_or_unset(ec, thresholds.ec_min, thresholds.ec_max)) alarm = 1;
+    if (!in_range_or_unset(n, thresholds.n_min, thresholds.n_max)) alarm = 1;
+    if (!in_range_or_unset(p, thresholds.p_min, thresholds.p_max)) alarm = 1;
+    if (!in_range_or_unset(k, thresholds.k_min, thresholds.k_max)) alarm = 1;
+
     int humidity = static_cast<int>(humidityF + (humidityF >= 0 ? 0.5f : -0.5f));
     int co2 = static_cast<int>(co2F + (co2F >= 0 ? 0.5f : -0.5f));
 
     const std::string deviceId = g_deviceId.empty() ? "unknown" : g_deviceId;
     const std::string ts = IsoTimestampUtc();
 
-    // Build JSON matching Qt client expectations.
+    // Build JSON matching Qt/ETS client expectations，包含全部传感器数值。
     // Note: keep numeric fields as JSON numbers.
-    char sensorsBuf[256];
+    char sensorsBuf[512];
     std::snprintf(
         sensorsBuf, sizeof(sensorsBuf),
-        "\"sensors\":{\"soilMoisture\":%d,\"lightLevel\":%d,\"temperature\":%.2f,\"humidity\":%d,\"formaldehyde\":%.4f,\"tvoc\":%.4f,\"co2\":%d}",
+        "\"sensors\":{"
+        "\"soilMoisture\":%d,\"lightLevel\":%d,\"temperature\":%.2f,\"humidity\":%d,"
+        "\"formaldehyde\":%.4f,\"tvoc\":%.4f,\"co2\":%d,"
+        "\"soilTemperature\":%.2f,\"ec\":%.0f,\"ph\":%.1f,"
+        "\"nitrogen\":%.0f,\"phosphorus\":%.0f,\"potassium\":%.0f,"
+        "\"salt\":%.0f,\"tds\":%.0f,\"alarm\":%d}",
         soilMoisture, lightLevel, static_cast<double>(temperature), humidity,
-        static_cast<double>(formaldehyde), static_cast<double>(tvoc), co2);
+        static_cast<double>(formaldehyde), static_cast<double>(tvoc), co2,
+        static_cast<double>(soilTemp), static_cast<double>(ec), static_cast<double>(ph),
+        static_cast<double>(n), static_cast<double>(p), static_cast<double>(k),
+        static_cast<double>(salt), static_cast<double>(tds), alarm);
 
     outJson.clear();
     outJson.reserve(includeImage ? 512 + imageBase64.size() : 256);

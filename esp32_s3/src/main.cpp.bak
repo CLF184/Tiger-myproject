@@ -4,12 +4,12 @@
 #include <vector>
 #include <driver/uart.h>
 #include <DHT.h>
+#include <WiFi.h>
 
 #include "camera_module.h"
 #include "dht_module.h"
 #include "jw01_module.h"
 #include "soil_module.h"
-#include "udp_broadcast.h"
 
 using namespace std;
 
@@ -34,12 +34,6 @@ using namespace std;
 #define ESC 0x7E
 #define CAMERA_END 0x01 //相机
 
-// WiFi & UDP 配置（请根据实际情况修改）
-const char *WIFI_SSID = "werrrrttt";
-const char *WIFI_PASSWORD = "13719623327aa";
-const uint16_t UDP_PORT = 9000;  // 传感器数据广播端口
-const uint16_t UDP_CMD_PORT = 9001; // 命令接收端口
-
 char *command;
 QueueHandle_t cmdQueue = xQueueCreate(10, sizeof(command));
 
@@ -48,38 +42,21 @@ SemaphoreHandle_t serialMutex = NULL;
 
 Adafruit_NeoPixel pixels(PIX_NUM, PIN_PIXS, NEO_GRB + NEO_KHZ800);
 
-// 保留原有帧格式(FRAME_HEAD/ESC/END)，并同时通过串口和 UDP 广播发送
 void transmitData(const char *buf, int len,unsigned char type){
-  // 为 UDP 广播准备的帧缓冲：最坏情况每字节都需要 ESC 转义，所以分配 2*len + 2
-  const int maxLen = (len * 2) + 2;
-  uint8_t *frame = (uint8_t *)pvPortMalloc(maxLen);
-  if (frame == NULL) {
-    return;
-  }
-  int pos = 0;
-
+  static char temp;
   if(xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE){
-    // 帧头
-    frame[pos++] = FRAME_HEAD;
-
-    // 数据 + 转义
-    for(int i = 0; i < len; i++) {
-      uint8_t temp = (uint8_t)buf[i];
-      if(temp == ESC || temp == FRAME_END || temp == FRAME_HEAD || temp == CAMERA_END){
-        frame[pos++] = ESC;
+    Serial.write(FRAME_HEAD);
+    for(int i=0; i<len; i++) {
+      temp=buf[i];
+      if(temp==ESC ||temp==FRAME_END||temp==FRAME_HEAD||temp==CAMERA_END){
+        Serial.write(ESC);
       }
-      frame[pos++] = temp;
+      Serial.write(temp);
     }
-
-    // 结束/类型字节（例如 FRAME_END 或 CAMERA_END）
-    frame[pos++] = (uint8_t)type;
-
-    // 不做应用层分包：一次发出整个帧（UDP/IP 层可能会自动分片）
-    udp_broadcast::send((const char *)frame, pos, type);
-    Serial.printf("Transmitted frame: %d bytes (type: 0x%02X)\n", pos, type);
+    Serial.write(type);
+    // Serial.write("\n");
   }
   xSemaphoreGive(serialMutex);
-  vPortFree(frame);
 }
 
 // void controlGPIO(const char* command) {
@@ -120,19 +97,19 @@ void showPixelColor(uint32_t c) {
 
 // 中断回调（仅超时触发）
 void IRAM_ATTR onSerialData() {
-  // 注意：该回调在中断上下文，避免使用 std::vector/new 等复杂操作
-  static char rxBuf[256];
-  int n = 0;
-  while (Serial.available() && n < (int)sizeof(rxBuf) - 1) {
-    rxBuf[n++] = (char)Serial.read();
+  static char c;
+  static vector<char> cmd;
+  cmd.clear();
+  int index = 0;
+  while(Serial.available()) {
+    c = Serial.read();
+    cmd.push_back(c);
   }
-  rxBuf[n] = '\0';
-
-  char *temp = (char *)pvPortMalloc(n + 1);
-  if (temp == NULL) {
-    return;
-  }
-  memcpy(temp, rxBuf, n + 1);
+  cmd.push_back('\0'); // 添加字符串结束符
+  char *temp;
+  temp=new char[cmd.size()];
+  memcpy(temp, cmd.data(), cmd.size());
+  //Serial.printf("Received command: %s\n", temp);
   xQueueSendFromISR(cmdQueue, &temp, NULL);
 }
 
@@ -160,23 +137,6 @@ void processCommands() {
 void processCommandshandler(void *pvParameters) {
   while (true) {
     processCommands();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
-}
-
-// UDP 命令接收任务：监听 9001 端口并将命令送入 cmdQueue
-void udpReceiveTask(void *pvParameters) {
-  char buf[256];
-  while (true) {
-    int len = udp_broadcast::receive(buf, sizeof(buf) - 1);
-    if (len > 0) {
-      buf[len] = '\0';
-      char *temp = (char *)pvPortMalloc(len + 1);
-      if (temp != NULL) {
-        memcpy(temp, buf, len + 1);
-        xQueueSend(cmdQueue, &temp, portMAX_DELAY);
-      }
-    }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
@@ -218,12 +178,6 @@ void setup() {
   pixels.begin();
   pixels.setBrightness(8);
   showPixelColor(0x0);
-
-  // 初始化 WiFi + UDP 广播
-  udp_broadcast::begin(WIFI_SSID, WIFI_PASSWORD, UDP_PORT);
-  // 初始化 UDP 命令接收端口
-  udp_broadcast::begin_rx(UDP_CMD_PORT);
-
   camera_module::set_transmit(transmitData);
   dht_module::init(DHTPIN, DHTTYPE);
   Serial.onReceive(onSerialData, true);
@@ -237,7 +191,6 @@ void setup() {
                     1000);
   xTaskCreate(processCommandshandler, "processCommandshandler", 4096, NULL, 1, NULL);
   xTaskCreate(send_data, "send_data", 4096, NULL, 1, NULL);
-  xTaskCreate(udpReceiveTask, "udpReceiveTask", 4096, NULL, 1, NULL);
 }
 
 void loop() {

@@ -14,6 +14,7 @@
  */
 
 #include <cstdio>
+#include <cstdint>
 
 #include "napi/native_api.h"
 #include "napi/native_common.h"
@@ -27,69 +28,50 @@
 #include "led_control.h"
 #include "light_sensor.h"
 #include "myserial.h"
+#include "wifi_udp_receiver.h"
 #include "pump_control.h"
 #include "sg90.h"
 #include "soil_moisture.h"
 
+#include "auto_control.h"
+
 static napi_value initAllModules(napi_env env, napi_callback_info info)
 {
     napi_value result;
-    int status = 0;
-    int module_status = 0;
+    uint32_t failMask = 0;
 
-    module_status = soil_moisture_init();
-    if (module_status != 0)
-    {
-        status = -1;
-        goto finish;
-    }
+    enum InitFailBits : uint32_t {
+        INIT_FAIL_SG90 = 1u << 0,
+        INIT_FAIL_PUMP = 1u << 1,
+        INIT_FAIL_LIGHT_SENSOR = 1u << 2,
+        INIT_FAIL_LED = 1u << 3,
+        INIT_FAIL_FAN = 1u << 4,
+        INIT_FAIL_BUZZER = 1u << 5,
+    };
 
-    module_status = SG90_Init();
-    if (module_status != 0)
-    {
-        status = -2;
-        goto finish;
-    }
+    auto recordFail = [&](uint32_t bit, int ret) {
+        if (ret != 0) {
+            failMask |= bit;
+        }
+    };
 
-    module_status = pump_init();
-    if (module_status != 0)
-    {
-        status = -3;
-        goto finish;
-    }
+    // 土壤湿度外设已更换：土壤湿度从串口数据键 SoilHumi 获取，旧 ADC 模块初始化失败不应阻塞整体初始化
+    (void)soil_moisture_init();
+    recordFail(INIT_FAIL_SG90, SG90_Init());
+    recordFail(INIT_FAIL_PUMP, pump_init());
+    recordFail(INIT_FAIL_LIGHT_SENSOR, light_sensor_init());
+    recordFail(INIT_FAIL_LED, LedInit());
+    recordFail(INIT_FAIL_FAN, initMotorControl());
+    recordFail(INIT_FAIL_BUZZER, BuzzerInit());
 
-    module_status = light_sensor_init();
-    if (module_status != 0)
-    {
-        status = -4;
-        goto finish;
-    }
-
-    module_status = LedInit();
-    if (module_status != 0)
-    {
-        status = -5;
-        goto finish;
-    }
-
-    module_status = initMotorControl();
-    if (module_status != 0)
-    {
-        status = -6;
-        goto finish;
-    }
-
-    module_status = BuzzerInit();
-    if (module_status != 0)
-    {
-        status = -7;
-        goto finish;
-    }
-
+    // 串口用于相机/控制命令，传感器数据改为 WiFi UDP 通道
     init_uart();
+    init_wifi_udp_receiver();
 
-finish:
-    NAPI_CALL(env, napi_create_int32(env, status, &result));
+    // 自动控制线程：默认阈值不生效（由全局开关决定），线程常驻用于接收阈值/命令
+    control::Start();
+
+    NAPI_CALL(env, napi_create_uint32(env, failMask, &result));
     return result;
 }
 
@@ -114,6 +96,7 @@ static napi_value register_myproject_apis(napi_env env, napi_value exports)
     RegisterSerialApis(env, exports);
     RegisterLlamaApis(env, exports);
     RegisterMqttApis(env, exports);
+    RegisterControlApis(env, exports);
     return exports;
 }
 

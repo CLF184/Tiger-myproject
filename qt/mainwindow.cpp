@@ -9,6 +9,10 @@
 #include <QPen>
 #include <QValueAxis>
 #include <QDateTimeAxis>
+#include <QCheckBox>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QScrollArea>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -28,13 +32,18 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUI()
 {
+    // 顶部工具栏（包含 MQTT 连接信息和重连按钮）
+    setupTopToolbar();
+
     // 创建主标签页
     tabWidget = new QTabWidget(this);
 
-    // 创建三个页面
+    // 创建页面
     dataPage = new QWidget();
     chartPage = new QWidget();
     imagePage = new QWidget();
+    autoControlPage = new QWidget();
+    manualControlPage = new QWidget();
 
     // 配置数据页面
     QVBoxLayout *dataLayout = new QVBoxLayout(dataPage);
@@ -53,6 +62,14 @@ void MainWindow::setupUI()
     labelFormaldehyde = createSensorCard("🧪 甲醛", "--");
     labelTvoc = createSensorCard("🏭 TVOC", "--");
     labelCo2 = createSensorCard("🌎 CO₂", "--");
+    labelSoilTemp = createSensorCard("🌡️ 土壤温度", "--");
+    labelEc = createSensorCard("⚡ EC", "--");
+    labelPh = createSensorCard("📏 pH", "--");
+    labelN = createSensorCard("🧪 氮(N)", "--");
+    labelP = createSensorCard("🧪 磷(P)", "--");
+    labelK = createSensorCard("🧪 钾(K)", "--");
+    labelSalt = createSensorCard("🧂 盐分", "--");
+    labelTds = createSensorCard("💧 TDS", "--");
 
     // 添加传感器卡片到网格
     sensorsGrid->addWidget(labelDeviceId, 0, 0);
@@ -64,6 +81,14 @@ void MainWindow::setupUI()
     sensorsGrid->addWidget(labelFormaldehyde, 3, 0);
     sensorsGrid->addWidget(labelTvoc, 3, 1);
     sensorsGrid->addWidget(labelCo2, 4, 0);
+    sensorsGrid->addWidget(labelSoilTemp, 4, 1);
+    sensorsGrid->addWidget(labelEc, 5, 0);
+    sensorsGrid->addWidget(labelPh, 5, 1);
+    sensorsGrid->addWidget(labelN, 6, 0);
+    sensorsGrid->addWidget(labelP, 6, 1);
+    sensorsGrid->addWidget(labelK, 7, 0);
+    sensorsGrid->addWidget(labelSalt, 7, 1);
+    sensorsGrid->addWidget(labelTds, 8, 0);
 
     dataLayout->addLayout(sensorsGrid);
     dataLayout->addStretch();
@@ -74,13 +99,37 @@ void MainWindow::setupUI()
     // 设置图像页面
     setupImagePage();
 
+    // 设置自动控制页面
+    setupAutoControlPage();
+
+    // 设置手动控制页面
+    setupManualControlPage();
+
+    // 为数据页面创建滚动区域，使内容过长时可以滚动
+    QScrollArea *dataScrollArea = new QScrollArea();
+    dataScrollArea->setWidgetResizable(true);
+    dataScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    dataScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    dataScrollArea->setWidget(dataPage);
+
     // 添加页面到标签页
-    tabWidget->addTab(dataPage, "数据面板");
+    tabWidget->addTab(dataScrollArea, "数据面板");
     tabWidget->addTab(chartPage, "图表");
     tabWidget->addTab(imagePage, "图像");
+    tabWidget->addTab(autoControlPage, "自动控制");
+    tabWidget->addTab(manualControlPage, "手动控制");
+
+    // 用一个容器把顶部工具栏和 tabWidget 竖直堆叠
+    QWidget *central = new QWidget(this);
+    QVBoxLayout *centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    if (topToolbar) {
+        centralLayout->addWidget(topToolbar);
+    }
+    centralLayout->addWidget(tabWidget);
 
     // 设置中央窗口部件
-    setCentralWidget(tabWidget);
+    setCentralWidget(central);
 
     // 应用样式
     this->setStyleSheet(R"(
@@ -111,6 +160,22 @@ void MainWindow::setupUI()
             border: 1px solid #e0e0e0;
         }
     )");
+}
+
+void MainWindow::setupTopToolbar()
+{
+    topToolbar = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(topToolbar);
+    layout->setContentsMargins(8, 4, 8, 4);
+
+    mqttStatusLabel = new QLabel(tr("MQTT: 未连接"), topToolbar);
+    QPushButton *reconnectBtn = new QPushButton(tr("重新连接"), topToolbar);
+
+    layout->addWidget(mqttStatusLabel);
+    layout->addStretch();
+    layout->addWidget(reconnectBtn);
+
+    connect(reconnectBtn, &QPushButton::clicked, this, &MainWindow::reconnectMqtt);
 }
 
 void MainWindow::setupChartPage()
@@ -310,6 +375,251 @@ void MainWindow::setupImagePage()
     imageLayout->addWidget(scrollArea);
 }
 
+void MainWindow::setupAutoControlPage()
+{
+    QVBoxLayout *layout = new QVBoxLayout(autoControlPage);
+
+    QLabel *hint = new QLabel(tr("通过 MQTT 向设备下发自动控制阈值，\n设备侧会在 C++ 线程中按阈值自动控制水泵/灯光/风扇/蜂鸣器。"));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    autoControlEnableCheck = new QCheckBox(tr("启用自动控制"));
+    layout->addWidget(autoControlEnableCheck);
+
+    auto makeSpinRow = [&](const QString &labelText, QWidget *editor) {
+        QHBoxLayout *row = new QHBoxLayout();
+        QLabel *lab = new QLabel(labelText);
+        lab->setMinimumWidth(120);
+        row->addWidget(lab);
+        row->addWidget(editor, 1);
+        layout->addLayout(row);
+    };
+
+    soilOnSpin = new QDoubleSpinBox();
+    soilOnSpin->setRange(0, 100000);
+    soilOnSpin->setValue(1200);
+    makeSpinRow(tr("土壤干阈值 soil_on"), soilOnSpin);
+
+    soilOffSpin = new QDoubleSpinBox();
+    soilOffSpin->setRange(0, 100000);
+    soilOffSpin->setValue(1600);
+    makeSpinRow(tr("土壤湿阈值 soil_off"), soilOffSpin);
+
+    lightOnSpin = new QDoubleSpinBox();
+    lightOnSpin->setRange(0, 100000);
+    lightOnSpin->setValue(300);
+    makeSpinRow(tr("光照暗阈值 light_on"), lightOnSpin);
+
+    lightOffSpin = new QDoubleSpinBox();
+    lightOffSpin->setRange(0, 100000);
+    lightOffSpin->setValue(500);
+    makeSpinRow(tr("光照亮阈值 light_off"), lightOffSpin);
+
+    tempOnSpin = new QDoubleSpinBox();
+    tempOnSpin->setRange(-40, 100);
+    tempOnSpin->setDecimals(1);
+    tempOnSpin->setValue(30.0);
+    makeSpinRow(tr("温度高阈值 temp_on (°C)"), tempOnSpin);
+
+    tempOffSpin = new QDoubleSpinBox();
+    tempOffSpin->setRange(-40, 100);
+    tempOffSpin->setDecimals(1);
+    tempOffSpin->setValue(27.0);
+    makeSpinRow(tr("温度低阈值 temp_off (°C)"), tempOffSpin);
+
+    co2OnSpin = new QDoubleSpinBox();
+    co2OnSpin->setRange(0.0, 100000.0);
+    co2OnSpin->setDecimals(1);
+    co2OnSpin->setValue(1200.0);
+    makeSpinRow(tr("CO2 白天高阈值 co2_on (ppm)"), co2OnSpin);
+
+    co2OffSpin = new QDoubleSpinBox();
+    co2OffSpin->setRange(0.0, 100000.0);
+    co2OffSpin->setDecimals(1);
+    co2OffSpin->setValue(800.0);
+    makeSpinRow(tr("CO2 白天低阈值 co2_off (ppm)"), co2OffSpin);
+
+    co2NightOnSpin = new QDoubleSpinBox();
+    co2NightOnSpin->setRange(0.0, 100000.0);
+    co2NightOnSpin->setDecimals(1);
+    co2NightOnSpin->setValue(1200.0);
+    makeSpinRow(tr("CO2 夜间高阈值 co2_night_on (ppm)"), co2NightOnSpin);
+
+    co2NightOffSpin = new QDoubleSpinBox();
+    co2NightOffSpin->setRange(0.0, 100000.0);
+    co2NightOffSpin->setDecimals(1);
+    co2NightOffSpin->setValue(800.0);
+    makeSpinRow(tr("CO2 夜间低阈值 co2_night_off (ppm)"), co2NightOffSpin);
+
+    // 养分/酸碱报警阈值（使用成员变量，供 publishAutoControlCommand 读取）
+    phMinSpin = new QDoubleSpinBox();
+    phMinSpin->setRange(0.0, 14.0);
+    phMinSpin->setDecimals(2);
+    phMinSpin->setValue(5.5);
+    makeSpinRow(tr("pH 最小值 ph_min"), phMinSpin);
+
+    phMaxSpin = new QDoubleSpinBox();
+    phMaxSpin->setRange(0.0, 14.0);
+    phMaxSpin->setDecimals(2);
+    phMaxSpin->setValue(8.5);
+    makeSpinRow(tr("pH 最大值 ph_max"), phMaxSpin);
+
+    ecMinSpin = new QDoubleSpinBox();
+    ecMinSpin->setRange(0.0, 100000.0);
+    ecMinSpin->setDecimals(1);
+    ecMinSpin->setValue(0.0);
+    makeSpinRow(tr("EC 最小值 ec_min"), ecMinSpin);
+
+    ecMaxSpin = new QDoubleSpinBox();
+    ecMaxSpin->setRange(0.0, 100000.0);
+    ecMaxSpin->setDecimals(1);
+    ecMaxSpin->setValue(5000.0);
+    makeSpinRow(tr("EC 最大值 ec_max"), ecMaxSpin);
+
+    nMinSpin = new QDoubleSpinBox();
+    nMinSpin->setRange(0.0, 100000.0);
+    nMinSpin->setDecimals(1);
+    nMinSpin->setValue(0.0);
+    makeSpinRow(tr("氮(N) 最小值 n_min"), nMinSpin);
+
+    nMaxSpin = new QDoubleSpinBox();
+    nMaxSpin->setRange(0.0, 100000.0);
+    nMaxSpin->setDecimals(1);
+    nMaxSpin->setValue(3000.0);
+    makeSpinRow(tr("氮(N) 最大值 n_max"), nMaxSpin);
+
+    pMinSpin = new QDoubleSpinBox();
+    pMinSpin->setRange(0.0, 100000.0);
+    pMinSpin->setDecimals(1);
+    pMinSpin->setValue(0.0);
+    makeSpinRow(tr("磷(P) 最小值 p_min"), pMinSpin);
+
+    pMaxSpin = new QDoubleSpinBox();
+    pMaxSpin->setRange(0.0, 100000.0);
+    pMaxSpin->setDecimals(1);
+    pMaxSpin->setValue(3000.0);
+    makeSpinRow(tr("磷(P) 最大值 p_max"), pMaxSpin);
+
+    kMinSpin = new QDoubleSpinBox();
+    kMinSpin->setRange(0.0, 100000.0);
+    kMinSpin->setDecimals(1);
+    kMinSpin->setValue(0.0);
+    makeSpinRow(tr("钾(K) 最小值 k_min"), kMinSpin);
+
+    kMaxSpin = new QDoubleSpinBox();
+    kMaxSpin->setRange(0.0, 100000.0);
+    kMaxSpin->setDecimals(1);
+    kMaxSpin->setValue(3000.0);
+    makeSpinRow(tr("钾(K) 最大值 k_max"), kMaxSpin);
+
+    fanSpeedSpin = new QSpinBox();
+    fanSpeedSpin->setRange(0, 100);
+    fanSpeedSpin->setValue(80);
+    makeSpinRow(tr("风扇速度 fan_speed (%)"), fanSpeedSpin);
+
+    QPushButton *applyBtn = new QPushButton(tr("下发阈值到设备"));
+    layout->addWidget(applyBtn);
+
+    connect(applyBtn, &QPushButton::clicked, this, &MainWindow::publishAutoControlCommand);
+}
+
+void MainWindow::setupManualControlPage()
+{
+    QVBoxLayout *layout = new QVBoxLayout(manualControlPage);
+
+    QLabel *manualHint = new QLabel(tr("单独的执行器操作（立即控制一次，不依赖自动控制开关）"));
+    manualHint->setWordWrap(true);
+    layout->addWidget(manualHint);
+
+    // 水泵
+    {
+        QHBoxLayout *row = new QHBoxLayout();
+        QLabel *lab = new QLabel(tr("水泵"));
+        lab->setMinimumWidth(120);
+        QPushButton *onBtn = new QPushButton(tr("开启"));
+        QPushButton *offBtn = new QPushButton(tr("关闭"));
+        row->addWidget(lab);
+        row->addWidget(onBtn);
+        row->addWidget(offBtn);
+        layout->addLayout(row);
+        connect(onBtn, &QPushButton::clicked, this, &MainWindow::publishPumpOn);
+        connect(offBtn, &QPushButton::clicked, this, &MainWindow::publishPumpOff);
+    }
+
+    // LED
+    {
+        QHBoxLayout *row = new QHBoxLayout();
+        QLabel *lab = new QLabel(tr("LED"));
+        lab->setMinimumWidth(120);
+        QPushButton *onBtn = new QPushButton(tr("点亮"));
+        QPushButton *offBtn = new QPushButton(tr("熄灭"));
+        row->addWidget(lab);
+        row->addWidget(onBtn);
+        row->addWidget(offBtn);
+        layout->addLayout(row);
+        connect(onBtn, &QPushButton::clicked, this, &MainWindow::publishLedOn);
+        connect(offBtn, &QPushButton::clicked, this, &MainWindow::publishLedOff);
+    }
+
+    // 风扇（使用当前风扇速度作为 direct fan 命令的速度）
+    {
+        QHBoxLayout *row = new QHBoxLayout();
+        QLabel *lab = new QLabel(tr("风扇"));
+        lab->setMinimumWidth(120);
+        QPushButton *onBtn = new QPushButton(tr("启动"));
+        QPushButton *offBtn = new QPushButton(tr("停止"));
+        row->addWidget(lab);
+        row->addWidget(onBtn);
+        row->addWidget(offBtn);
+        layout->addLayout(row);
+        connect(onBtn, &QPushButton::clicked, this, &MainWindow::publishFanStart);
+        connect(offBtn, &QPushButton::clicked, this, &MainWindow::publishFanStop);
+    }
+
+    // 蜂鸣器
+    {
+        QHBoxLayout *row = new QHBoxLayout();
+        QLabel *lab = new QLabel(tr("蜂鸣器"));
+        lab->setMinimumWidth(120);
+        QPushButton *onBtn = new QPushButton(tr("打开"));
+        QPushButton *offBtn = new QPushButton(tr("关闭"));
+        row->addWidget(lab);
+        row->addWidget(onBtn);
+        row->addWidget(offBtn);
+        layout->addLayout(row);
+        connect(onBtn, &QPushButton::clicked, this, &MainWindow::publishBuzzerOn);
+        connect(offBtn, &QPushButton::clicked, this, &MainWindow::publishBuzzerOff);
+    }
+
+    // 舵机角度
+    {
+        QHBoxLayout *row = new QHBoxLayout();
+        QLabel *lab = new QLabel(tr("舵机角度 (0-180°)"));
+        lab->setMinimumWidth(120);
+        servoAngleSpin = new QSpinBox();
+        servoAngleSpin->setRange(0, 180);
+        servoAngleSpin->setValue(90);
+        QPushButton *applyServo = new QPushButton(tr("设置角度"));
+        row->addWidget(lab);
+        row->addWidget(servoAngleSpin);
+        row->addWidget(applyServo);
+        layout->addLayout(row);
+        connect(applyServo, &QPushButton::clicked, this, &MainWindow::publishServoAngle);
+    }
+
+    // 拍照
+    {
+        QHBoxLayout *row = new QHBoxLayout();
+        QLabel *lab = new QLabel(tr("拍照"));
+        lab->setMinimumWidth(120);
+        QPushButton *captureBtn = new QPushButton(tr("拍照一次"));
+        row->addWidget(lab);
+        row->addWidget(captureBtn);
+        layout->addLayout(row);
+        connect(captureBtn, &QPushButton::clicked, this, &MainWindow::publishCapture);
+    }
+}
+
 void MainWindow::showMqttConfigDialog()
 {
     MqttConfigDialog dialog(this);
@@ -345,6 +655,8 @@ void MainWindow::showMqttConfigDialog()
 
 void MainWindow::connectMQTT()
 {
+    ensureMqttDisconnected();
+
     mqttClient = new QMqttClient(this);
     mqttClient->setHostname(mqttBrokerAddress);
     mqttClient->setPort(mqttBrokerPort);
@@ -353,8 +665,50 @@ void MainWindow::connectMQTT()
     connect(mqttClient, &QMqttClient::connected, this, &MainWindow::onMQTTConnected);
     connect(mqttClient, &QMqttClient::messageReceived, this, &MainWindow::onMQTTMessageReceived);
 
+    // 根据状态更新顶部状态文本
+    connect(mqttClient, &QMqttClient::stateChanged, this, [this](QMqttClient::ClientState state) {
+        if (!mqttStatusLabel)
+            return;
+        switch (state) {
+        case QMqttClient::Disconnected:
+            mqttStatusLabel->setText(tr("MQTT: 未连接"));
+            break;
+        case QMqttClient::Connecting:
+            mqttStatusLabel->setText(tr("MQTT: 连接中..."));
+            break;
+        case QMqttClient::Connected:
+            mqttStatusLabel->setText(tr("MQTT: 已连接"));
+            break;
+        }
+    });
+
     // 连接到MQTT代理
     mqttClient->connectToHost();
+}
+
+void MainWindow::ensureMqttDisconnected()
+{
+    if (mqttClient) {
+        if (mqttClient->state() != QMqttClient::Disconnected) {
+            mqttClient->disconnectFromHost();
+        }
+        mqttClient->deleteLater();
+        mqttClient = nullptr;
+    }
+    if (mqttStatusLabel) {
+        mqttStatusLabel->setText(tr("MQTT: 未连接"));
+    }
+}
+
+void MainWindow::reconnectMqtt()
+{
+    if (mqttBrokerAddress.isEmpty() || mqttDataTopic.isEmpty()) {
+        // 若尚未配置，弹出配置对话框
+        showMqttConfigDialog();
+        return;
+    }
+
+    connectMQTT();
 }
 
 void MainWindow::onMQTTConnected()
@@ -389,6 +743,13 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
             // 提取顶层属性
             QString deviceId = obj["deviceId"].toString();
             QString timestamp = obj["timestamp"].toString();
+
+            // 记住最近的 deviceId，并推导控制命令 topic
+            if (!deviceId.isEmpty()) {
+                currentDeviceId = deviceId;
+                // 控制命令 topic 不再携带 device_id，统一使用公共通道
+                mqttControlTopic = QStringLiteral("ciallo_ohos/control");
+            }
             
             // 检查sensors对象是否存在
             if (!obj.contains("sensors") || !obj["sensors"].isObject()) {
@@ -399,7 +760,7 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
             // 获取sensors对象
             QJsonObject sensors = obj["sensors"].toObject();
             
-            // 从sensors对象中提取数据
+            // 从sensors对象中提取数据（环境 + 土壤/养分）
             int soilMoisture = sensors["soilMoisture"].toInt();
             int lightLevel = sensors["lightLevel"].toInt();
             double temperature = sensors["temperature"].toDouble();
@@ -407,6 +768,17 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
             double formaldehyde = sensors["formaldehyde"].toDouble();
             double tvoc = sensors["tvoc"].toDouble();
             int co2 = sensors["co2"].toInt();
+
+            double soilTemp = sensors["soilTemperature"].toDouble();
+            double ec = sensors["ec"].toDouble();
+            double ph = sensors["ph"].toDouble();
+            double nVal = sensors["nitrogen"].toDouble();
+            double pVal = sensors["phosphorus"].toDouble();
+            double kVal = sensors["potassium"].toDouble();
+            double saltVal = sensors["salt"].toDouble();
+            double tdsVal = sensors["tds"].toDouble();
+
+            int alarm = sensors.contains("alarm") ? sensors["alarm"].toInt() : 0;
 
             // 可选：同一条 JSON 中携带 Base64 图片
             if (obj.contains("image") && obj["image"].isString()) {
@@ -435,6 +807,18 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
             labelFormaldehyde->setText(QString("<b>🧪 甲醛:</b><br><span style='font-size:16px;'>%1 ppm</span>").arg(formaldehyde));
             labelTvoc->setText(QString("<b>🏭 TVOC:</b><br><span style='font-size:16px;'>%1 ppm</span>").arg(tvoc));
             labelCo2->setText(QString("<b>🌎 CO₂:</b><br><span style='font-size:16px;'>%1 ppm</span>").arg(co2));
+            labelSoilTemp->setText(QString("<b>🌡️ 土壤温度:</b><br><span style='font-size:16px;'>%1 °C</span>").arg(soilTemp, 0, 'f', 1));
+            labelEc->setText(QString("<b>⚡ EC:</b><br><span style='font-size:16px;'>%1 mS/cm</span>").arg(ec, 0, 'f', 2));
+            labelPh->setText(QString("<b>📏 pH:</b><br><span style='font-size:16px;'>%1</span>").arg(ph, 0, 'f', 2));
+            labelN->setText(QString("<b>🧪 氮(N):</b><br><span style='font-size:16px;'>%1 mg/kg</span>").arg(nVal, 0, 'f', 1));
+            labelP->setText(QString("<b>🧪 磷(P):</b><br><span style='font-size:16px;'>%1 mg/kg</span>").arg(pVal, 0, 'f', 1));
+            labelK->setText(QString("<b>🧪 钾(K):</b><br><span style='font-size:16px;'>%1 mg/kg</span>").arg(kVal, 0, 'f', 1));
+            labelSalt->setText(QString("<b>🧂 盐分:</b><br><span style='font-size:16px;'>%1 mg/kg</span>").arg(saltVal, 0, 'f', 1));
+            labelTds->setText(QString("<b>💧 TDS:</b><br><span style='font-size:16px;'>%1 ppm</span>").arg(tdsVal, 0, 'f', 1));
+
+            if (alarm != 0) {
+                labelPh->setText(labelPh->text() + QString("<br><span style='color:red;'>⚠ 报警: 养分/酸碱超出阈值</span>"));
+            }
 
             // 更新图表
             QDateTime dateTime = QDateTime::fromString(timestamp, Qt::ISODate);
@@ -549,4 +933,157 @@ QLabel* MainWindow::createSensorCard(const QString &title, const QString &value)
     label->setAlignment(Qt::AlignCenter);
     label->setMinimumSize(200, 100);
     return label;
+}
+
+void MainWindow::publishAutoControlCommand()
+{
+    QJsonObject mode;
+    mode["enabled"] = autoControlEnableCheck && autoControlEnableCheck->isChecked();
+    mode["soil_on"] = soilOnSpin ? soilOnSpin->value() : 1200.0;
+    mode["soil_off"] = soilOffSpin ? soilOffSpin->value() : 1600.0;
+    mode["light_on"] = lightOnSpin ? lightOnSpin->value() : 300.0;
+    mode["light_off"] = lightOffSpin ? lightOffSpin->value() : 500.0;
+    mode["temp_on"] = tempOnSpin ? tempOnSpin->value() : 30.0;
+    mode["temp_off"] = tempOffSpin ? tempOffSpin->value() : 27.0;
+    mode["co2_on"] = co2OnSpin ? co2OnSpin->value() : 1200.0;
+    mode["co2_off"] = co2OffSpin ? co2OffSpin->value() : 800.0;
+    if (co2NightOnSpin) mode["co2_night_on"] = co2NightOnSpin->value();
+    if (co2NightOffSpin) mode["co2_night_off"] = co2NightOffSpin->value();
+    mode["ph_min"] = phMinSpin ? phMinSpin->value() : 5.5;
+    mode["ph_max"] = phMaxSpin ? phMaxSpin->value() : 8.5;
+    mode["ec_min"] = ecMinSpin ? ecMinSpin->value() : 0.0;
+    mode["ec_max"] = ecMaxSpin ? ecMaxSpin->value() : 5000.0;
+    mode["n_min"] = nMinSpin ? nMinSpin->value() : 0.0;
+    mode["n_max"] = nMaxSpin ? nMaxSpin->value() : 3000.0;
+    mode["p_min"] = pMinSpin ? pMinSpin->value() : 0.0;
+    mode["p_max"] = pMaxSpin ? pMaxSpin->value() : 3000.0;
+    mode["k_min"] = kMinSpin ? kMinSpin->value() : 0.0;
+    mode["k_max"] = kMaxSpin ? kMaxSpin->value() : 3000.0;
+    mode["fan_speed"] = fanSpeedSpin ? fanSpeedSpin->value() : 80;
+    publishModeObject(mode, tr("阈值控制命令已发布到 topic: %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishModeObject(const QJsonObject &mode, const QString &successMessage)
+{
+    if (!mqttClient || mqttClient->state() != QMqttClient::Connected) {
+        QMessageBox::warning(this, tr("MQTT 未连接"), tr("请先连接到 MQTT 服务器并接收一条设备数据。"));
+        return;
+    }
+
+    if (mqttControlTopic.isEmpty()) {
+        QMessageBox::warning(this, tr("未知设备ID"), tr("尚未从传感器数据中解析到 deviceId，无法推导控制 topic。"));
+        return;
+    }
+
+    QJsonObject obj;
+    obj["mode"] = mode;
+
+    QJsonDocument doc(obj);
+    QByteArray payload = doc.toJson(QJsonDocument::Compact);
+
+    auto id = mqttClient->publish(mqttControlTopic, payload, 0, false);
+    if (id == -1) {
+        QMessageBox::warning(this, tr("下发失败"), tr("MQTT publish 失败，请检查连接状态。"));
+    } else if (!successMessage.isEmpty()) {
+        QMessageBox::information(this, tr("已下发"), successMessage);
+    }
+}
+
+// 下发一次性控制命令：使用 "control" 包裹，区分于阈值配置的 "mode"。
+void MainWindow::publishControlObject(const QJsonObject &control, const QString &successMessage)
+{
+    if (!mqttClient || mqttClient->state() != QMqttClient::Connected) {
+        QMessageBox::warning(this, tr("MQTT 未连接"), tr("请先连接到 MQTT 服务器并接收一条设备数据。"));
+        return;
+    }
+
+    if (mqttControlTopic.isEmpty()) {
+        QMessageBox::warning(this, tr("未知设备ID"), tr("尚未从传感器数据中解析到 deviceId，无法推导控制 topic。"));
+        return;
+    }
+
+    QJsonObject obj;
+    obj["control"] = control;
+
+    QJsonDocument doc(obj);
+    QByteArray payload = doc.toJson(QJsonDocument::Compact);
+
+    auto id = mqttClient->publish(mqttControlTopic, payload, 0, false);
+    if (id == -1) {
+        QMessageBox::warning(this, tr("下发失败"), tr("MQTT publish 失败，请检查连接状态。"));
+    } else if (!successMessage.isEmpty()) {
+        QMessageBox::information(this, tr("已下发"), successMessage);
+    }
+}
+
+void MainWindow::publishPumpOn()
+{
+    QJsonObject control;
+    control["pump"] = 1;
+    publishControlObject(control, tr("已发送水泵开启命令到 %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishPumpOff()
+{
+    QJsonObject control;
+    control["pump"] = 0;
+    publishControlObject(control, tr("已发送水泵关闭命令到 %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishLedOn()
+{
+    QJsonObject control;
+    control["led"] = 1;
+    publishControlObject(control, tr("已发送 LED 点亮命令到 %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishLedOff()
+{
+    QJsonObject control;
+    control["led"] = 0;
+    publishControlObject(control, tr("已发送 LED 熄灭命令到 %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishFanStart()
+{
+    QJsonObject control;
+    int speed = fanSpeedSpin ? fanSpeedSpin->value() : 80;
+    control["fan"] = speed;
+    publishControlObject(control, tr("已发送风扇启动命令到 %1 (速度 %2%)").arg(mqttControlTopic).arg(speed));
+}
+
+void MainWindow::publishFanStop()
+{
+    QJsonObject control;
+    control["fan"] = 0;
+    publishControlObject(control, tr("已发送风扇停止命令到 %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishServoAngle()
+{
+    QJsonObject control;
+    int angle = servoAngleSpin ? servoAngleSpin->value() : 90;
+    control["sg90_angle"] = angle;
+    publishControlObject(control, tr("已发送舵机角度 %1° 命令到 %2").arg(angle).arg(mqttControlTopic));
+}
+
+void MainWindow::publishCapture()
+{
+    QJsonObject control;
+    control["capture"] = 1;
+    publishControlObject(control, tr("已发送拍照命令到 %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishBuzzerOn()
+{
+    QJsonObject control;
+    control["buzzer"] = 1;
+    publishControlObject(control, tr("已发送蜂鸣器打开命令到 %1").arg(mqttControlTopic));
+}
+
+void MainWindow::publishBuzzerOff()
+{
+    QJsonObject control;
+    control["buzzer"] = 0;
+    publishControlObject(control, tr("已发送蜂鸣器关闭命令到 %1").arg(mqttControlTopic));
 }

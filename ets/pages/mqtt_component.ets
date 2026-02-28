@@ -21,12 +21,11 @@ export interface ToastOptions {
 
 @Component
 export struct MqttSettings {
-  @State brokerUrl: string = 'tcp://192.168.31.5:1883';
+  @State brokerUrl: string = 'tcp://broker.emqx.io:1883';
   @State clientId: string = `device_${Math.floor(Math.random() * 1000000)}`;
   @State username: string = '';
   @State password: string = '';
   @State topic: string = 'ciallo_ohos/sensors';
-  @State imageTopic: string = 'ciallo_ohos/image';  // 添加图片主题状态变量，默认为/image
   @State isConnected: boolean = false;
   @State connectionStatus: string = '未连接';
   @State autoUpload: boolean = false;
@@ -59,12 +58,6 @@ export struct MqttSettings {
     if (savedTopic) {
       this.topic = savedTopic;
     }
-    
-    // 获取之前配置的图片主题
-    const savedImageTopic = mqttService.getImageTopic();
-    if (savedImageTopic) {
-      this.imageTopic = savedImageTopic;
-    }
   }
 
   aboutToDisappear() {
@@ -89,61 +82,37 @@ export struct MqttSettings {
     
     // 设置主题
     mqttService.setTopic(this.topic);
-    
-    // 设置图片主题
-    mqttService.setImageTopic(this.imageTopic);
-    
-    try {
-      const connected = await mqttService.connect();
-      this.updateConnectionStatus();
-      
-      if (connected) {
-        const toastOptions: ToastOptions = {
-          message: '已连接到MQTT服务器',
-          duration: 2000
-        };
-        prompt.showToast(toastOptions);
-      } else {
-        const toastOptions: ToastOptions = {
-          message: '连接MQTT服务器失败',
-          duration: 2000
-        };
-        prompt.showToast(toastOptions);
-      }
-    } catch (error) {
+
+    const connected = await mqttService.connect().catch((error: Error | string) => {
       console.error(`连接MQTT异常: ${error}`);
-      const toastOptions: ToastOptions = {
-        message: `连接异常: ${error}`,
-        duration: 2000
-      };
-      prompt.showToast(toastOptions);
-    }
+      return false;
+    });
+    this.updateConnectionStatus();
+
+    prompt.showToast({
+      message: connected ? '已连接到MQTT服务器' : '连接MQTT服务器失败',
+      duration: 2000
+    });
   }
 
   // 断开MQTT连接
   async disconnectFromMqtt() {
-    try {
-      await mqttService.disconnect();
-      this.updateConnectionStatus();
-      const toastOptions: ToastOptions = {
-        message: '已断开MQTT连接',
-        duration: 2000
-      };
-      prompt.showToast(toastOptions);
-      
-      // 断开连接时停止自动上传
-      if (this.uploadTimer !== -1) {
-        clearInterval(this.uploadTimer);
-        this.uploadTimer = -1;
-        this.autoUpload = false;
-      }
-    } catch (error) {
+    const ok = await mqttService.disconnect().catch((error: Error | string) => {
       console.error(`断开MQTT异常: ${error}`);
-      const toastOptions: ToastOptions = {
-        message: `断开连接异常: ${error}`,
-        duration: 2000
-      };
-      prompt.showToast(toastOptions);
+      return false;
+    });
+    this.updateConnectionStatus();
+
+    prompt.showToast({
+      message: ok ? '已断开MQTT连接' : '断开MQTT连接失败',
+      duration: 2000
+    });
+
+    // 断开连接时停止自动上传
+    if (this.uploadTimer !== -1) {
+      clearInterval(this.uploadTimer);
+      this.uploadTimer = -1;
+      this.autoUpload = false;
     }
   }
 
@@ -202,35 +171,22 @@ export struct MqttSettings {
     }
     
     this.isUploading = true;
-    
-    try {
-      // 传感器采集与 JSON 组包由原生侧完成（格式与 Qt 客户端一致）
-      const success = await mqttService.uploadSensorData();
-      
-      if (success) {
-        this.lastUploadTime = new Date().toLocaleTimeString();
-        const toastOptions: ToastOptions = {
-          message: '数据上传成功',
-          duration: 1000
-        };
-        prompt.showToast(toastOptions);
-      } else {
-        const toastOptions: ToastOptions = {
-          message: '数据上传失败',
-          duration: 2000
-        };
-        prompt.showToast(toastOptions);
-      }
-    } catch (error) {
+
+    // 传感器采集与 JSON 组包由原生侧完成（格式与 Qt 客户端一致）
+    const success = await mqttService.uploadSensorData().catch((error: Error | string) => {
       console.error(`上传数据异常: ${error}`);
-      const toastOptions: ToastOptions = {
-        message: `上传异常: ${error}`,
-        duration: 2000
-      };
-      prompt.showToast(toastOptions);
-    } finally {
-      this.isUploading = false;
+      return false;
+    });
+
+    if (success) {
+      this.lastUploadTime = new Date().toLocaleTimeString();
     }
+    prompt.showToast({
+      message: success ? '数据上传成功' : '数据上传失败',
+      duration: success ? 1000 : 2000
+    });
+
+    this.isUploading = false;
   }
 
   // 上传当前图片
@@ -249,43 +205,28 @@ export struct MqttSettings {
     }
     
     this.isImageUploading = true;
-    
-    try {
-      // 显示上传中提示
-      const loadingToast: ToastOptions = {
-        message: '图片上传中...',
-        duration: 1000
-      };
-      prompt.showToast(loadingToast);
-      
-      // 原生侧固定读取 PHOTO_PATH 并做 Base64 编码后发布
-      const success = await mqttService.uploadImage();
-      
-      if (success) {
-        this.lastImageUploadTime = new Date().toLocaleTimeString();
-        const toastOptions: ToastOptions = {
-          message: '图片上传成功',
-          duration: 1000
-        };
-        prompt.showToast(toastOptions);
-      } else {
-        const toastOptions: ToastOptions = {
-          message: '图片上传失败',
-          duration: 2000
-        };
-        prompt.showToast(toastOptions);
-      }
-    } catch (error) {
+
+    // 显示上传中提示
+    prompt.showToast({
+      message: '图片上传中...',
+      duration: 1000
+    });
+
+    // 原生侧固定读取 PHOTO_PATH 并做 Base64 编码后发布
+    const success = await mqttService.uploadImage().catch((error: Error | string) => {
       console.error(`上传图片异常: ${error}`);
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      const toastOptions: ToastOptions = {
-        message: `上传图片异常: ${errorMsg}`,
-        duration: 2000
-      };
-      prompt.showToast(toastOptions);
-    } finally {
-      this.isImageUploading = false;
+      return false;
+    });
+
+    if (success) {
+      this.lastImageUploadTime = new Date().toLocaleTimeString();
     }
+    prompt.showToast({
+      message: success ? '图片上传成功' : '图片上传失败',
+      duration: success ? 1000 : 2000
+    });
+
+    this.isImageUploading = false;
   }
 
   build() {
@@ -347,20 +288,6 @@ export struct MqttSettings {
             // 实时更新服务中的主题设置
             if (value) {
               mqttService.setTopic(value);
-            }
-          })
-      }.width('100%').margin({ bottom: 8 })
-      
-      // 添加图片主题配置行
-      Row() {
-        Text('图片主题:').fontSize(16).width('30%')
-        TextInput({ text: this.imageTopic })
-          .width('70%')
-          .onChange((value) => {
-            this.imageTopic = value;
-            // 实时更新服务中的图片主题设置
-            if (value) {
-              mqttService.setImageTopic(value);
             }
           })
       }.width('100%').margin({ bottom: 8 })

@@ -6,10 +6,12 @@
 #include "napi/native_node_api.h"
 
 #include "mqttc_client.h"
+#include "mqtt_global.h"
 
 #include "mqtt_payload_builder.h"
 
-static mqttc::MqttCClient g_mqttClient;
+
+static mqttc::MqttCClient &g_mqttClient = mqttc::GetMqttClient();
 
 static napi_value configMqtt(napi_env env, napi_callback_info info)
 {

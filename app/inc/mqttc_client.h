@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <atomic>
 
 extern "C" {
 #include "mqtt.h"
@@ -15,6 +16,8 @@ namespace mqttc {
 
 class MqttCClient {
 public:
+    using MessageCallback = void (*)(void *ctx, const char *topic, const void *data, size_t size);
+
     MqttCClient();
     ~MqttCClient();
 
@@ -32,6 +35,13 @@ public:
                  int qos,
                  bool retain,
                  std::string *errorMsg = nullptr);
+
+    bool subscribe(const std::string &topic, int qos = 0, std::string *errorMsg = nullptr);
+
+    // 单次 pump：处理读写与回调分发。建议在外部循环中周期性调用。
+    bool syncOnce(std::string *errorMsg = nullptr);
+
+    void setMessageCallback(MessageCallback cb, void *ctx);
 
     bool isConnected() const;
     std::string getLastError() const;
@@ -58,6 +68,11 @@ private:
     std::vector<uint8_t> recvBuf_;
 
     std::string lastError_;
+
+    std::atomic<MessageCallback> msgCb_{nullptr};
+    std::atomic<void *> msgCbCtx_{nullptr};
+
+    static void publish_callback_thunk(void **state, struct mqtt_response_publish *publish);
 };
 
 } // namespace mqttc

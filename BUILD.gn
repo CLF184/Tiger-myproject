@@ -6,6 +6,7 @@ ohos_shared_library("myproject_napi") {
     "hal/inc",
     "drivers/inc",
     "app/inc",
+    "control/inc",
     "third_party/MQTT-C/include",
     "//drivers/hdf_core/framework/include",
     "//drivers/hdf_core/framework/include/osal",
@@ -18,6 +19,7 @@ ohos_shared_library("myproject_napi") {
 
   sources = [
     "myproject_napi.cpp",
+    "napi/control_napi.cpp",
     "napi/buzzer_napi.cpp",
     "napi/fan_napi.cpp",
     "napi/led_napi.cpp",
@@ -42,9 +44,12 @@ ohos_shared_library("myproject_napi") {
     "drivers/src/sg90.cpp",
     "drivers/src/soil_moisture.cpp",
     "app/src/myserial.cpp",
+    "app/src/wifi_udp_receiver.cpp",
     "app/src/llama_client.cpp",
     "app/src/mqttc_client.cpp",
-    "app/src/mqtt_payload_builder.cpp"
+    "app/src/mqtt_global.cpp",
+    "app/src/mqtt_payload_builder.cpp",
+    "control/src/auto_control.cpp",
   ]
 
   #deps = [ "//foundation/arkui/napi:ace_napi" ]

@@ -21,11 +21,11 @@ declare namespace myproject {
      */
     function initAllModules(): number;
 
-    /**
-     * 读取土壤湿度传感器原始值
-     * @returns 土壤湿度值或null（如果读取失败）
-     */
-    function ReadSoilMoistureRaw(): number | null;
+    // /**
+    //  * 读取土壤湿度传感器原始值
+    //  * @returns 土壤湿度值或null（如果读取失败）
+    //  */
+    // function ReadSoilMoistureRaw(): number | null;
 
     /**
      * 设置SG90舵机角度
@@ -93,6 +93,7 @@ declare namespace myproject {
     /**
      * 根据关键字获取数据
      * @param key 数据的键名
+        * @example 获取土壤湿度：getDataByKey("SoilHumi")
      * @returns 与键名对应的数值
      */
     function getDataByKey(key: string): number;
@@ -165,6 +166,83 @@ declare namespace myproject {
      * - haveImage=true: 原生侧读取 PHOTO_PATH，Base64 后作为 JSON 的可选字段 image 一并发布
      */
     function publishMqtt(topic: string, haveImage: boolean, qos?: number): Promise<boolean>;
+
+    /**
+     * 自动控制：全局开关
+     * @param enabled true 启用阈值控制；false 禁用阈值控制
+     * @returns 0 表示成功
+     */
+    function setAutoControlEnabled(enabled: boolean): number;
+
+    /**
+     * 获取自动控制全局开关
+     */
+    function getAutoControlEnabled(): boolean;
+
+    /**
+     * 设置自动控制阈值（字段可选，未提供的字段保持不变）
+     * on/off 为迟滞阈值，避免抖动。
+     */
+    function setAutoControlThresholds(cfg: {
+        soil_on?: number;
+        soil_off?: number;
+        light_on?: number;
+        light_off?: number;
+        temp_on?: number;
+        temp_off?: number;
+        ch2o_on?: number;
+        ch2o_off?: number;
+        co2_on?: number;
+        co2_off?: number;
+        co2_night_on?: number;
+        co2_night_off?: number;
+        ph_min?: number;
+        ph_max?: number;
+        ec_min?: number;
+        ec_max?: number;
+        n_min?: number;
+        n_max?: number;
+        p_min?: number;
+        p_max?: number;
+        k_min?: number;
+        k_max?: number;
+        fan_speed?: number;
+    }): number;
+
+    /**
+     * 获取当前自动控制阈值
+     */
+    function getAutoControlThresholds(): {
+        soil_on: number;
+        soil_off: number;
+        light_on: number;
+        light_off: number;
+        temp_on: number;
+        temp_off: number;
+        ch2o_on: number;
+        ch2o_off: number;
+        co2_on: number;
+        co2_off: number;
+        co2_night_on: number;
+        co2_night_off: number;
+        ph_min: number;
+        ph_max: number;
+        ec_min: number;
+        ec_max: number;
+        n_min: number;
+        n_max: number;
+        p_min: number;
+        p_max: number;
+        k_min: number;
+        k_max: number;
+        fan_speed: number;
+    };
+
+    /**
+     * 设置 MQTT 命令下发主题（Qt 可向该 topic 发布阈值 JSON）
+    * 为空则使用默认：ciallo_ohos/control（不带 deviceId）
+     */
+    function setAutoControlCommandTopic(topic: string): number;
 }
 
 export default myproject;

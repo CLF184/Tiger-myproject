@@ -29,5 +29,6 @@ napi_value RegisterSg90Apis(napi_env env, napi_value exports);
 napi_value RegisterSoilMoistureApis(napi_env env, napi_value exports);
 napi_value RegisterLlamaApis(napi_env env, napi_value exports);
 napi_value RegisterMqttApis(napi_env env, napi_value exports);
+napi_value RegisterControlApis(napi_env env, napi_value exports);
 
 #endif

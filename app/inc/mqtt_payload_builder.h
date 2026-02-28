@@ -8,6 +8,9 @@ namespace mqttc {
 // Set deviceId used in sensor JSON payload.
 void SetMqttPayloadDeviceId(const std::string &deviceId);
 
+// Get deviceId currently used in payload builder.
+std::string GetMqttPayloadDeviceId();
+
 // Build JSON payload for sensor topic.
 // Format matches the Qt client parser:
 // {"deviceId":"...","timestamp":"...","sensors":{...}}

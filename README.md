@@ -43,6 +43,7 @@
 ```
 
 ## 目录
+- [自动控制（设备侧闭环）](#自动控制设备侧闭环)
 - [土壤湿度传感器](#土壤湿度传感器)
 - [SG90舵机控制](#sg90舵机控制)
 - [水泵控制](#水泵控制)
@@ -52,6 +53,92 @@
 - [风扇控制](#风扇控制)
 - [蜂鸣器控制](#蜂鸣器控制)
 - [LLaMA客户端](#llama客户端)
+
+## 自动控制（设备侧闭环）
+
+自动控制逻辑运行在设备侧 C/C++ 常驻线程中：线程启动后会周期性读取传感器值，并根据迟滞阈值控制执行器（泵/LED/风扇/蜂鸣器）。
+
+### 特点
+
+- **全局开关**：关闭时阈值不生效（线程仍运行，用于接收阈值/命令）。
+- **周期宏定义**：控制周期由宏 `AUTO_CONTROL_PERIOD_MS`（单位 ms）控制，可在编译时覆盖。
+- **阈值来源**：
+    - ETS 侧通过 NAPI 设置（本地 UI 配置）。
+    - Qt/PC 侧通过 MQTT 发布 JSON 命令下发（远程配置）。
+
+### ETS/NAPI 接口（@ohos.myproject）
+
+- `setAutoControlEnabled(enabled: boolean): number`
+- `getAutoControlEnabled(): boolean`
+- `setAutoControlThresholds(cfg: { soil_on?; soil_off?; light_on?; light_off?; temp_on?; temp_off?; ch2o_on?; ch2o_off?; fan_speed? }): number`
+- `getAutoControlThresholds(): object`
+- `setAutoControlCommandTopic(topic: string): number`（可选，覆盖默认命令 topic）
+
+说明：
+- `setAutoControlThresholds` 的字段均为可选；未提供的字段保持不变。
+- 建议先 `setAutoControlThresholds` 再 `setAutoControlEnabled(true)`。
+
+### Qt/MQTT 下发命令
+
+默认命令 topic：
+
+```text
+ciallo_ohos/control
+```
+
+其中 `<deviceId>` 默认取设备侧 `configMqtt(..., clientId, ...)` 的 clientId。
+
+推荐 Payload 使用一层包装字段 `mode`（字段可选；enabled 支持 `true/false/0/1`）：
+
+```json
+{
+    "mode": {
+        "enabled": true,
+        "soil_on": 1200,
+        "soil_off": 1600,
+        "light_on": 300,
+        "light_off": 500,
+        "temp_on": 30.0,
+        "temp_off": 27.0,
+        "ch2o_on": 0.20,
+        "ch2o_off": 0.15,
+        "fan_speed": 80
+    }
+}
+```
+
+设备侧同时兼容旧格式（字段直接在最外层）的 JSON，但新开发推荐使用 `mode` 包装。
+
+#### 直接控制执行器的简洁格式
+
+除了上面的“阈值+开关”格式，还支持一类更简单的“直接控制某个执行器”的 JSON。推荐也放在 `mode` 中，例如：
+
+```json
+{"mode": {"pump": 1}}
+{"mode": {"led": 0}}
+{"mode": {"fan": 60}}
+{"mode": {"buzzer": 1}}
+```
+
+这些字段可以和阈值字段一起出现在同一条 JSON 中，譬如：
+
+```json
+{
+    "mode": {
+        "enabled": true,
+        "soil_on": 1200,
+        "fan_speed": 70,
+        "fan": 70,
+        "pump": 0
+    }
+}
+```
+
+说明：
+- 直接控制命令不依赖 `enabled` 开关，即使自动控制关闭也会立即执行一次；
+- 若自动控制处于开启状态，下一次周期内仍会按阈值逻辑更新执行器状态（即手动只是一时刻的“插手”）。
+
+注意：设备侧只有在 MQTT 已连接时才会订阅并处理命令（本工程由 ETS 调用 `connectMqtt()` 建立连接）。
 
 ## 土壤湿度传感器
 

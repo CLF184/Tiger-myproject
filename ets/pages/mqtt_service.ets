@@ -1,4 +1,3 @@
-import prompt from '@ohos.prompt';
 import myproject from '@ohos.myproject';
 
 // MQTT连接状态枚举
@@ -19,7 +18,6 @@ export class MqttService {
   private username: string = '';
   private password: string = '';
   private topic: string = 'ciallo_ohos/sensors'; // 默认主题
-  private imageTopic: string = 'ciallo_ohos/image'; // 图片发布主题
 
   // 单例模式
   public static getInstance(): MqttService {
@@ -71,19 +69,6 @@ export class MqttService {
   // 获取当前主题
   public getTopic(): string {
     return this.topic;
-  }
-
-  // 设置图片发布主题
-  public setImageTopic(topic: string): void {
-    if (topic && topic.trim() !== '') {
-      this.imageTopic = topic;
-      console.info(`MQTT: 图片主题已设置为 ${topic}`);
-    }
-  }
-
-  // 获取图片主题
-  public getImageTopic(): string {
-    return this.imageTopic;
   }
 
   // 连接到MQTT服务器
@@ -142,14 +127,8 @@ export class MqttService {
 
   // 重新连接
   public async reconnect(): Promise<boolean> {
-    try {
-      this.connectionStatus = MqttConnectionStatus.CONNECTING;
-      return await this.connect();
-    } catch (error) {
-      console.error(`MQTT重新连接异常: ${error}`);
-      this.connectionStatus = MqttConnectionStatus.CONNECTION_FAILED;
-      return false;
-    }
+    this.connectionStatus = MqttConnectionStatus.CONNECTING;
+    return this.connect();
   }
 
   // 发布传感器消息（组包/采集由原生侧完成）
@@ -180,12 +159,7 @@ export class MqttService {
 
   // 上传传感器数据（组包/采集由原生侧完成）
   public async uploadSensorData(): Promise<boolean> {
-    try {
-      return await this.publishSensor(this.topic, 1);
-    } catch (error) {
-      console.error(`上传传感器数据异常: ${error}`);
-      return false;
-    }
+    return this.publishSensor(this.topic, 1);
   }
 
   // 上传图片数据 - 原生侧固定读取 PHOTO_PATH 并做 Base64 编码
@@ -196,7 +170,7 @@ export class MqttService {
     }
 
     try {
-      console.info('MQTT: 开始发布图片(作为传感器JSON的可选字段, PHOTO_PATH)');
+      console.info(`MQTT: 开始发布图片(作为传感器JSON的可选字段, PHOTO_PATH), topic=${this.topic}`);
 
       // publishMqtt(topic, haveImage, qos)
       // 当 haveImage=true 时，原生侧会读取 PHOTO_PATH，Base64 后写入 JSON 的 image 字段再发布。

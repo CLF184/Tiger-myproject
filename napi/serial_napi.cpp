@@ -18,6 +18,9 @@
 #include <pthread.h>
 #include <string>
 
+#include "mqtt_global.h"
+#include "mqtt_payload_builder.h"
+
 #include "napi/native_api.h"
 #include "napi/native_common.h"
 #include "napi/native_node_api.h"
@@ -64,19 +67,33 @@ extern "C" void NotifyImageCapturedFromNative(const char* path)
     napi_threadsafe_function tsfn = g_imageTsfn;
     pthread_mutex_unlock(&g_tsfnMutex);
 
-    if (tsfn == nullptr) {
+    // 1) 通知 JS 侧（若已注册回调）
+    if (tsfn != nullptr) {
+        auto* payload = new (std::nothrow) std::string(path);
+        if (payload != nullptr) {
+            napi_status st = napi_call_threadsafe_function(tsfn, payload, napi_tsfn_nonblocking);
+            if (st != napi_ok) {
+                delete payload;
+            }
+        }
+    }
+
+    // 2) 自动通过 MQTT 上报一条携带图片的传感器 JSON
+    //    这样无论是 ETS 还是 Qt 触发的 capture，拍照完成后都会有一条含 image 的上报。
+    mqttc::MqttCClient &client = mqttc::GetMqttClient();
+    if (!client.isConnected()) {
         return;
     }
 
-    auto* payload = new (std::nothrow) std::string(path);
-    if (payload == nullptr) {
+    std::string json;
+    std::string err;
+    if (!mqttc::BuildSensorPayloadJson(true, json, &err)) {
         return;
     }
 
-    napi_status st = napi_call_threadsafe_function(tsfn, payload, napi_tsfn_nonblocking);
-    if (st != napi_ok) {
-        delete payload;
-    }
+    const std::string topic = "ciallo_ohos/sensors"; // 与 Qt/ETS 默认数据 topic 保持一致
+    std::string pubErr;
+    (void)client.publish(topic, json.data(), json.size(), 0, false, &pubErr);
 }
 
 static napi_value sendCapture(napi_env env, napi_callback_info info)
