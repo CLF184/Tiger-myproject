@@ -377,7 +377,16 @@ void MainWindow::setupImagePage()
 
 void MainWindow::setupAutoControlPage()
 {
-    QVBoxLayout *layout = new QVBoxLayout(autoControlPage);
+    // 外层布局 + 滚动区域，避免界面过长限制窗口最小高度
+    QVBoxLayout *outerLayout = new QVBoxLayout(autoControlPage);
+
+    QScrollArea *scrollArea = new QScrollArea();
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    QWidget *container = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(container);
 
     QLabel *hint = new QLabel(tr("通过 MQTT 向设备下发自动控制阈值，\n设备侧会在 C++ 线程中按阈值自动控制水泵/灯光/风扇/蜂鸣器。"));
     hint->setWordWrap(true);
@@ -389,6 +398,8 @@ void MainWindow::setupAutoControlPage()
     auto makeSpinRow = [&](const QString &labelText, QWidget *editor) {
         QHBoxLayout *row = new QHBoxLayout();
         QLabel *lab = new QLabel(labelText);
+        // 允许多行显示，避免在窗口较窄时文字被压扁
+        lab->setWordWrap(true);
         lab->setMinimumWidth(120);
         row->addWidget(lab);
         row->addWidget(editor, 1);
@@ -521,11 +532,23 @@ void MainWindow::setupAutoControlPage()
     layout->addWidget(applyBtn);
 
     connect(applyBtn, &QPushButton::clicked, this, &MainWindow::publishAutoControlCommand);
+
+    scrollArea->setWidget(container);
+    outerLayout->addWidget(scrollArea);
 }
 
 void MainWindow::setupManualControlPage()
 {
-    QVBoxLayout *layout = new QVBoxLayout(manualControlPage);
+    // 外层布局 + 滚动区域，避免界面过长限制窗口最小高度
+    QVBoxLayout *outerLayout = new QVBoxLayout(manualControlPage);
+
+    QScrollArea *scrollArea = new QScrollArea();
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    QWidget *container = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(container);
 
     QLabel *manualHint = new QLabel(tr("单独的执行器操作（立即控制一次，不依赖自动控制开关）"));
     manualHint->setWordWrap(true);
@@ -618,6 +641,9 @@ void MainWindow::setupManualControlPage()
         layout->addLayout(row);
         connect(captureBtn, &QPushButton::clicked, this, &MainWindow::publishCapture);
     }
+
+    scrollArea->setWidget(container);
+    outerLayout->addWidget(scrollArea);
 }
 
 void MainWindow::showMqttConfigDialog()
@@ -640,6 +666,9 @@ void MainWindow::showMqttConfigDialog()
         mqttBrokerAddress = dialog.brokerAddress();
         mqttBrokerPort = dialog.brokerPort();
         mqttDataTopic = dialog.dataTopicName();
+
+        // 控制命令统一使用公共通道，不依赖设备上报数据后再推导
+        mqttControlTopic = QStringLiteral("ciallo_ohos/control");
 
         // 如果所有必填字段都已填写，则连接MQTT
         if (!mqttBrokerAddress.isEmpty() && !mqttDataTopic.isEmpty()) {
@@ -664,23 +693,7 @@ void MainWindow::connectMQTT()
     // 连接信号槽
     connect(mqttClient, &QMqttClient::connected, this, &MainWindow::onMQTTConnected);
     connect(mqttClient, &QMqttClient::messageReceived, this, &MainWindow::onMQTTMessageReceived);
-
-    // 根据状态更新顶部状态文本
-    connect(mqttClient, &QMqttClient::stateChanged, this, [this](QMqttClient::ClientState state) {
-        if (!mqttStatusLabel)
-            return;
-        switch (state) {
-        case QMqttClient::Disconnected:
-            mqttStatusLabel->setText(tr("MQTT: 未连接"));
-            break;
-        case QMqttClient::Connecting:
-            mqttStatusLabel->setText(tr("MQTT: 连接中..."));
-            break;
-        case QMqttClient::Connected:
-            mqttStatusLabel->setText(tr("MQTT: 已连接"));
-            break;
-        }
-    });
+    connect(mqttClient, &QMqttClient::stateChanged, this, &MainWindow::handleMqttStateChanged);
 
     // 连接到MQTT代理
     mqttClient->connectToHost();
@@ -695,13 +708,81 @@ void MainWindow::ensureMqttDisconnected()
         mqttClient->deleteLater();
         mqttClient = nullptr;
     }
+}
+
+void MainWindow::handleMqttStateChanged(QMqttClient::ClientState state)
+{
     if (mqttStatusLabel) {
-        mqttStatusLabel->setText(tr("MQTT: 未连接"));
+        switch (state) {
+        case QMqttClient::Disconnected:
+            mqttStatusLabel->setText(tr("MQTT: 未连接"));
+            break;
+        case QMqttClient::Connecting:
+            mqttStatusLabel->setText(tr("MQTT: 连接中..."));
+            break;
+        case QMqttClient::Connected:
+            mqttStatusLabel->setText(tr("MQTT: 已连接"));
+            break;
+        }
+    }
+
+    if (state == QMqttClient::Connected) {
+        mqttReconnectAttempts = 0;
+        if (mqttReconnectTimer && mqttReconnectTimer->isActive()) {
+            mqttReconnectTimer->stop();
+        }
+        return;
+    }
+
+    if (state == QMqttClient::Disconnected) {
+        // 若未配置地址或主题，则不自动重连
+        if (mqttBrokerAddress.isEmpty() || mqttDataTopic.isEmpty()) {
+            return;
+        }
+
+        // 超过最大重试次数则停止自动重连
+        const int maxAttempts = 5;
+        if (mqttReconnectAttempts >= maxAttempts) {
+            return;
+        }
+
+        if (!mqttReconnectTimer) {
+            mqttReconnectTimer = new QTimer(this);
+            mqttReconnectTimer->setSingleShot(true);
+            connect(mqttReconnectTimer, &QTimer::timeout, this, [this, maxAttempts]() {
+                if (mqttBrokerAddress.isEmpty() || mqttDataTopic.isEmpty()) {
+                    return;
+                }
+
+                if (mqttReconnectAttempts >= maxAttempts) {
+                    return;
+                }
+
+                ++mqttReconnectAttempts;
+                reconnectMqtt();
+
+                if (mqttReconnectAttempts >= maxAttempts) {
+                    QMessageBox::warning(this,
+                                         tr("MQTT 重连失败"),
+                                         tr("已连续尝试重连 MQTT 超过 5 次，停止自动重试。"));
+                }
+            });
+        }
+
+        if (!mqttReconnectTimer->isActive()) {
+            mqttReconnectTimer->start(5000); // 5 秒后自动尝试重连
+        }
     }
 }
 
 void MainWindow::reconnectMqtt()
 {
+    // 手动重连重置计数器
+    if (mqttReconnectTimer && mqttReconnectTimer->isActive()) {
+        mqttReconnectTimer->stop();
+    }
+    mqttReconnectAttempts = 0;
+
     if (mqttBrokerAddress.isEmpty() || mqttDataTopic.isEmpty()) {
         // 若尚未配置，弹出配置对话框
         showMqttConfigDialog();
@@ -931,7 +1012,8 @@ QLabel* MainWindow::createSensorCard(const QString &title, const QString &value)
 {
     QLabel *label = new QLabel(QString("<b>%1:</b><br><span style='font-size:16px;'>%2</span>").arg(title).arg(value));
     label->setAlignment(Qt::AlignCenter);
-    label->setMinimumSize(200, 100);
+    // 只设置最小宽度，避免叠加行数导致窗口最小高度过大
+    label->setMinimumWidth(140);
     return label;
 }
 
@@ -966,12 +1048,12 @@ void MainWindow::publishAutoControlCommand()
 void MainWindow::publishModeObject(const QJsonObject &mode, const QString &successMessage)
 {
     if (!mqttClient || mqttClient->state() != QMqttClient::Connected) {
-        QMessageBox::warning(this, tr("MQTT 未连接"), tr("请先连接到 MQTT 服务器并接收一条设备数据。"));
+        QMessageBox::warning(this, tr("MQTT 未连接"), tr("请先连接到 MQTT 服务器。"));
         return;
     }
 
     if (mqttControlTopic.isEmpty()) {
-        QMessageBox::warning(this, tr("未知设备ID"), tr("尚未从传感器数据中解析到 deviceId，无法推导控制 topic。"));
+        QMessageBox::warning(this, tr("控制 Topic 未配置"), tr("控制 topic 未配置，请检查 MQTT 配置。"));
         return;
     }
 
@@ -981,7 +1063,7 @@ void MainWindow::publishModeObject(const QJsonObject &mode, const QString &succe
     QJsonDocument doc(obj);
     QByteArray payload = doc.toJson(QJsonDocument::Compact);
 
-    auto id = mqttClient->publish(mqttControlTopic, payload, 0, false);
+    auto id = mqttClient->publish(mqttControlTopic, payload, 1, false);
     if (id == -1) {
         QMessageBox::warning(this, tr("下发失败"), tr("MQTT publish 失败，请检查连接状态。"));
     } else if (!successMessage.isEmpty()) {
@@ -993,12 +1075,12 @@ void MainWindow::publishModeObject(const QJsonObject &mode, const QString &succe
 void MainWindow::publishControlObject(const QJsonObject &control, const QString &successMessage)
 {
     if (!mqttClient || mqttClient->state() != QMqttClient::Connected) {
-        QMessageBox::warning(this, tr("MQTT 未连接"), tr("请先连接到 MQTT 服务器并接收一条设备数据。"));
+        QMessageBox::warning(this, tr("MQTT 未连接"), tr("请先连接到 MQTT 服务器。"));
         return;
     }
 
     if (mqttControlTopic.isEmpty()) {
-        QMessageBox::warning(this, tr("未知设备ID"), tr("尚未从传感器数据中解析到 deviceId，无法推导控制 topic。"));
+        QMessageBox::warning(this, tr("控制 Topic 未配置"), tr("控制 topic 未配置，请检查 MQTT 配置。"));
         return;
     }
 
@@ -1008,7 +1090,7 @@ void MainWindow::publishControlObject(const QJsonObject &control, const QString 
     QJsonDocument doc(obj);
     QByteArray payload = doc.toJson(QJsonDocument::Compact);
 
-    auto id = mqttClient->publish(mqttControlTopic, payload, 0, false);
+    auto id = mqttClient->publish(mqttControlTopic, payload, 1, false);
     if (id == -1) {
         QMessageBox::warning(this, tr("下发失败"), tr("MQTT publish 失败，请检查连接状态。"));
     } else if (!successMessage.isEmpty()) {

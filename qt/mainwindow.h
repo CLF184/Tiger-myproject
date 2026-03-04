@@ -21,6 +21,7 @@
 #include <QValueAxis>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
+class QTimer;
 #include <QSpinBox>
 
 QT_BEGIN_NAMESPACE
@@ -36,6 +37,7 @@ public:
     ~MainWindow();
     
 private slots:
+    void handleMqttStateChanged(QMqttClient::ClientState state);
     void onMQTTConnected();
     void onMQTTMessageReceived(const QByteArray &message, const QMqttTopicName &topic);
     void showMqttConfigDialog(); // 新增方法
@@ -81,6 +83,8 @@ private:
     QLabel *mqttStatusLabel = nullptr;
     
     QMqttClient *mqttClient;
+    QTimer *mqttReconnectTimer = nullptr;
+    int mqttReconnectAttempts = 0;
     
     // 图表相关成员，不使用命名空间限定符
     QChart *temperatureChart;
