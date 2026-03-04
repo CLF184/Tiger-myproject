@@ -19,6 +19,9 @@ using namespace std;
 #define DHTPIN GPIO_NUM_2
 #define DHTTYPE DHT11 // 定义传感器类型为DHT11
 
+// 光照传感器 ADC 引脚（请根据实际接线修改）
+#define LIGHT_SENSOR_PIN GPIO_NUM_19
+
 #define RXD_PIN (GPIO_NUM_1)
 #define UART_NUM UART_NUM_1
 
@@ -190,9 +193,11 @@ void send_data(void *pvParameters) {
     dht_module::read(dht);
     jw01_module::get(jw01);
     soil_module::get(soil);
+    int rawLight = analogRead(LIGHT_SENSOR_PIN);
+    float light = (rawLight / 4095.0f) * 100.0f; // 转换为百分比 0~100
     snprintf(buffer,
                sizeof(buffer),
-               "Humi:%.3f;Temp:%.3f;CH2O:%.3f;TVOC:%.3f;CO_2:%.3f;SoilHumi:%.1f;SoilTemp:%.1f;EC:%.0f;pH:%.1f;N:%.0f;P:%.0f;K:%.0f;Salt:%.0f;TDS:%.0f;",
+               "Humi:%.3f;Temp:%.3f;CH2O:%.3f;TVOC:%.3f;CO_2:%.3f;SoilHumi:%.1f;SoilTemp:%.1f;EC:%.0f;pH:%.1f;N:%.0f;P:%.0f;K:%.0f;Salt:%.0f;TDS:%.0f;Light:%.1f;",
                dht.humidity,
                dht.temperature,
                jw01.ch2o,
@@ -206,7 +211,8 @@ void send_data(void *pvParameters) {
                soil.p,
                soil.k,
                soil.salt,
-               soil.tds);
+               soil.tds,
+               light);
     transmitData(buffer, strlen(buffer), FRAME_END);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }

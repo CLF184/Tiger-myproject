@@ -250,7 +250,7 @@ struct Index {
       this.soilMoisture = soilData;
     }
 
-    const lightData = myproject.readLightSensor();
+    const lightData = myproject.getDataByKey('Light');
     if (lightData !== null) {
       this.lightLevel = lightData;
     }

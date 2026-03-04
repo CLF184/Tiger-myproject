@@ -12,7 +12,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "light_sensor.h"
 #include "myserial.h" // get_data_by_key + PHOTO_PATH
 #include "auto_control.h" // control::AutoControlThresholds / GetThresholds
 
@@ -163,10 +162,8 @@ bool BuildSensorPayloadJson(bool includeImage, std::string &outJson, std::string
     float soilMoistureF = get_data_by_key(const_cast<char *>("SoilHumi"));
     int soilMoisture = static_cast<int>(soilMoistureF + (soilMoistureF >= 0 ? 0.5f : -0.5f));
 
-    int lightLevel = 0;
-    if (light_sensor_read(&lightLevel) != 0) {
-        lightLevel = 0;
-    }
+    float lightF = get_data_by_key(const_cast<char *>("Light"));
+    int lightLevel = static_cast<int>(lightF + (lightF >= 0 ? 0.5f : -0.5f));
 
     float temperature = get_data_by_key(const_cast<char *>("Temp"));
     float humidityF = get_data_by_key(const_cast<char *>("Humi"));

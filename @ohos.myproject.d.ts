@@ -46,11 +46,11 @@ declare namespace myproject {
      */
     function pumpOff(): number;
 
-    /**
-     * 读取光敏传感器数值
-     * @returns 光照强度值或null（如果读取失败）
-     */
-    function readLightSensor(): number | null;
+    // /**
+    //  * 读取光敏传感器数值
+    //  * @returns 光照强度值或null（如果读取失败）
+    //  */
+    // function readLightSensor(): number | null;
 
     /**
      * 打开LED灯
