@@ -25,7 +25,8 @@ export struct MqttSettings {
   @State clientId: string = `device_${Math.floor(Math.random() * 1000000)}`;
   @State username: string = '';
   @State password: string = '';
-  @State topic: string = 'ciallo_ohos/sensors';
+  // 仅设置 topic 前缀（命名空间）：例如把 ciallo_ohos 改为 myproj
+  @State topicPrefix: string = 'ciallo_ohos';
   @State isConnected: boolean = false;
   @State connectionStatus: string = '未连接';
   @State autoUpload: boolean = false;
@@ -54,9 +55,9 @@ export struct MqttSettings {
     this.updateConnectionStatus();
     
     // 获取之前配置的主题
-    const savedTopic = mqttService.getTopic();
-    if (savedTopic) {
-      this.topic = savedTopic;
+    const savedPrefix = mqttService.getTopic();
+    if (savedPrefix) {
+      this.topicPrefix = savedPrefix;
     }
   }
 
@@ -80,8 +81,8 @@ export struct MqttSettings {
     // 更新MQTT配置
     mqttService.configureMqtt(this.brokerUrl, this.clientId, this.username, this.password);
     
-    // 设置主题
-    mqttService.setTopic(this.topic);
+    // 设置 topic 前缀（命名空间）
+    mqttService.setTopic(this.topicPrefix);
 
     const connected = await mqttService.connect().catch((error: Error | string) => {
       console.error(`连接MQTT异常: ${error}`);
@@ -280,15 +281,16 @@ export struct MqttSettings {
       
       // 添加主题配置行
       Row() {
-        Text('发布主题:').fontSize(16).width('30%')
-        TextInput({ text: this.topic })
+        Text('Topic前缀:').fontSize(16).width('30%')
+        TextInput({
+          text: this.topicPrefix,
+          placeholder: '例如 ciallo_ohos（仅前缀）'
+        })
           .width('70%')
           .onChange((value) => {
-            this.topic = value;
-            // 实时更新服务中的主题设置
-            if (value) {
-              mqttService.setTopic(value);
-            }
+            this.topicPrefix = value;
+            // 实时更新服务中的前缀设置
+            mqttService.setTopic(value);
           })
       }.width('100%').margin({ bottom: 8 })
       

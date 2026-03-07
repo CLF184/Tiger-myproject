@@ -162,10 +162,13 @@ declare namespace myproject {
 
     /**
      * 发布消息
-     * - haveImage=false: 原生侧采集传感器并按 Qt 客户端所需 JSON 格式发布
-     * - haveImage=true: 原生侧读取 PHOTO_PATH，Base64 后作为 JSON 的可选字段 image 一并发布
+        * @param topicPrefix topic 前缀（命名空间），例如 ciallo_ohos
+        * 原生侧将统一发布到 <topicPrefix>/<deviceId>/sensors，并在 connect 后发布 retained announce：
+        * <topicPrefix>/announce/<deviceId>
+        * - haveImage=false: 原生侧采集传感器并按 Qt 客户端所需 JSON 格式发布
+        * - haveImage=true: 原生侧读取 PHOTO_PATH，Base64 后作为 JSON 的可选字段 image 一并发布
      */
-    function publishMqtt(topic: string, haveImage: boolean, qos?: number): Promise<boolean>;
+        function publishMqtt(topicPrefix: string, haveImage: boolean, qos?: number): Promise<boolean>;
 
     /**
      * 自动控制：全局开关
@@ -240,7 +243,7 @@ declare namespace myproject {
 
     /**
      * 设置 MQTT 命令下发主题（Qt 可向该 topic 发布阈值 JSON）
-    * 为空则使用默认：ciallo_ohos/control（不带 deviceId）
+    * 为空则使用默认：<prefix>/<deviceId>/control
      */
     function setAutoControlCommandTopic(topic: string): number;
 }

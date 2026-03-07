@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
 
 #include <fcntl.h>
 
@@ -10,6 +11,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "cJSON.h"
 
 namespace mqttc {
 
@@ -88,6 +91,18 @@ static bool SetNonBlocking(int fd, std::string *errorMsg)
         return false;
     }
     return true;
+}
+
+static std::string IsoTimestampUtc()
+{
+    std::time_t now = std::time(nullptr);
+    struct tm t;
+    std::memset(&t, 0, sizeof(t));
+    gmtime_r(&now, &t);
+
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &t);
+    return std::string(buf);
 }
 
 } // namespace
@@ -540,6 +555,71 @@ bool MqttCClient::publish(const std::string &topic,
 
     setLastErrorLocked("");
     return true;
+}
+
+bool MqttCClient::publishDiscoveryAnnounceRetained(const std::string &topicPrefix,
+                                                   const std::string &deviceId,
+                                                   const std::string &deviceType,
+                                                   std::string *errorMsg)
+{
+    if (topicPrefix.empty() || deviceId.empty() || deviceType.empty()) {
+        const std::string msg = "invalid args for publishDiscoveryAnnounceRetained";
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            setLastErrorLocked(msg);
+        }
+        if (errorMsg) *errorMsg = msg;
+        return false;
+    }
+
+    const std::string discoveryTopic = topicPrefix + "/announce/" + deviceId;
+    const std::string ts = IsoTimestampUtc();
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == nullptr) {
+        const std::string msg = "cJSON_CreateObject failed";
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            setLastErrorLocked(msg);
+        }
+        if (errorMsg) *errorMsg = msg;
+        return false;
+    }
+
+    bool ok = true;
+    ok = ok && (cJSON_AddStringToObject(root, "deviceId", deviceId.c_str()) != nullptr);
+    ok = ok && (cJSON_AddStringToObject(root, "chipId", deviceId.c_str()) != nullptr);
+    ok = ok && (cJSON_AddStringToObject(root, "deviceType", deviceType.c_str()) != nullptr);
+    ok = ok && (cJSON_AddStringToObject(root, "timestamp", ts.c_str()) != nullptr);
+
+    if (!ok) {
+        cJSON_Delete(root);
+        const std::string msg = "cJSON add field failed";
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            setLastErrorLocked(msg);
+        }
+        if (errorMsg) *errorMsg = msg;
+        return false;
+    }
+
+    char *printed = cJSON_PrintUnformatted(root);
+    if (printed == nullptr) {
+        cJSON_Delete(root);
+        const std::string msg = "cJSON_PrintUnformatted failed";
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            setLastErrorLocked(msg);
+        }
+        if (errorMsg) *errorMsg = msg;
+        return false;
+    }
+
+    std::string payload(printed);
+    cJSON_free(printed);
+    cJSON_Delete(root);
+
+    return publish(discoveryTopic, payload.data(), payload.size(), 1, true, errorMsg);
 }
 
 } // namespace mqttc

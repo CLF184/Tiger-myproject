@@ -38,6 +38,13 @@ public:
 
     bool subscribe(const std::string &topic, int qos = 0, std::string *errorMsg = nullptr);
 
+    // 发布设备发现(announce)消息：topic 为 <prefix>/announce/<deviceId>，payload 为 JSON。
+    // retain=true 便于客户端(如 Qt)订阅后立即获取最近一次 announce。
+    bool publishDiscoveryAnnounceRetained(const std::string &topicPrefix,
+                                          const std::string &deviceId,
+                                          const std::string &deviceType,
+                                          std::string *errorMsg = nullptr);
+
     // 单次 pump：处理读写与回调分发。建议在外部循环中周期性调用。
     bool syncOnce(std::string *errorMsg = nullptr);
 

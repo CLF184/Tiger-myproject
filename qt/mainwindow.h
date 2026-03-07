@@ -121,6 +121,9 @@ private:
     QString mqttControlTopic;   // 自动控制命令下发 topic
     QString currentDeviceId;    // 最近一次收到的数据中的 deviceId
 
+    QString mqttDiscoveryFilter; // 固定发现主题过滤器，例如 sys/discovery/announce/#
+    QString mqttTopicPrefix;     // topic 前缀/命名空间，例如 ciallo_ohos
+
     // 自动控制 UI 控件
     QCheckBox *autoControlEnableCheck = nullptr;
     QDoubleSpinBox *soilOnSpin = nullptr;

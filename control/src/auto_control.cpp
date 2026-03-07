@@ -327,9 +327,17 @@ void ControlLoop()
             cmdTopic = g_cmdTopic;
         }
         if (cmdTopic.empty()) {
-            // 默认使用不带 device_id 的公共控制主题
-            cmdTopic = std::string("ciallo_ohos/control");
-            {
+            // 默认使用带 deviceId 的控制主题（不再回退到公共通道）。
+            const std::string deviceId = mqttc::GetMqttPayloadDeviceId();
+            std::string prefix = mqttc::GetMqttTopicPrefix();
+            if (prefix.empty()) {
+                prefix = "ciallo_ohos";
+            }
+            if (deviceId.empty() || deviceId == "unknown") {
+                // 还没有 deviceId 时先不订阅，等待上层初始化/配置填充。
+                cmdTopic.clear();
+            } else {
+                cmdTopic = prefix + "/" + deviceId + "/control";
                 std::lock_guard<std::mutex> lock(g_mutex);
                 if (g_cmdTopic.empty()) g_cmdTopic = cmdTopic;
             }
@@ -339,7 +347,9 @@ void ControlLoop()
         if (mqtt.isConnected()) {
             if (!subscribed) {
                 std::string err;
-                subscribed = mqtt.subscribe(cmdTopic, 0, &err);
+                if (!cmdTopic.empty()) {
+                    subscribed = mqtt.subscribe(cmdTopic, 0, &err);
+                }
             }
             (void)mqtt.syncOnce(nullptr);
         } else {

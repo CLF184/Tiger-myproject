@@ -9,38 +9,38 @@
 └── sub_sample/
     └── cpt_sample/
         └── myproject_napi/
-            ├── BUILD.gn                 # 构建脚本
-            ├── @ohos.myproject.d.ts     # TypeScript 类型声明文件
-            ├── myproject_napi.cpp       # NAPI模块主文件
-            ├── README.md                # 项目说明文档
-            ├── inc/                     # 头文件目录
-            │   ├── buzzer_control.h     # 蜂鸣器控制
-            │   ├── fan_control.h        # 风扇控制
-            │   ├── led_control.h        # LED控制
-            │   ├── light_sensor.h       # 光敏传感器
-            │   ├── myserial.h           # 串口通信
-            │   ├── pump_control.h       # 水泵控制
-            │   ├── sg90.h               # SG90舵机控制
-            │   ├── soil_moisture.h      # 土壤湿度传感器
-            │   ├── llama_client.h       # LLaMA大语言模型客户端
-            │   ├── um_adc.h             # ADC操作接口
-            │   ├── um_gpio.h            # GPIO操作接口
-            │   └── um_pwm.h             # PWM操作接口
-            └── src/                     # 源文件目录
-                ├── buzzer_control.cpp   # 蜂鸣器控制实现
-                ├── fan_control.cpp      # 风扇控制实现
-                ├── led_control.cpp      # LED控制实现
-                ├── light_sensor.cpp     # 光敏传感器实现
-                ├── myserial.cpp         # 串口通信实现
-                ├── pump_control.cpp     # 水泵控制实现
-                ├── sg90.cpp             # SG90舵机控制实现
-                ├── soil_moisture.cpp    # 土壤湿度传感器实现
-                ├── llama_client.cpp     # LLaMA大语言模型客户端实现
-                ├── serial_uart.c        # 串口底层实现
-                ├── um_adc.c             # ADC操作接口实现
-                ├── um_gpio.c            # GPIO操作接口实现
-                └── um_pwm.c             # PWM操作接口实现
+            ├── BUILD.gn                     # 构建脚本
+            ├── @ohos.myproject.d.ts         # TypeScript 类型声明
+            ├── myproject_napi.cpp           # NAPI 主入口（聚合注册）
+            ├── README.md
+            ├── app/                         # 业务能力层（MQTT/LLaMA/串口/设备标识）
+            │   ├── inc/
+            │   └── src/
+            ├── control/                     # 自动控制闭环逻辑
+            │   ├── inc/
+            │   └── src/
+            ├── drivers/                     # 设备驱动层（泵/风扇/LED/蜂鸣器/传感器）
+            │   ├── inc/
+            │   └── src/
+            ├── hal/                         # 硬件抽象层（GPIO/PWM/ADC/UART）
+            │   ├── inc/
+            │   └── src/
+            ├── napi/                        # 各模块 NAPI 导出实现
+            ├── ets/pages/                   # OpenHarmony ETS 页面
+            ├── esp32_s3/                    # ESP32-S3 采集端工程（PlatformIO）
+            ├── qt/                          # Qt 上位机
+            └── third_party/                 # 第三方依赖（cJSON / MQTT-C）
 ```
+
+### 分层说明（按当前代码）
+
+- `myproject_napi.cpp`：负责 `initAllModules()` 和各 NAPI 子模块统一注册。
+- `napi/*.cpp`：将驱动层/业务层能力映射为 ETS 可调用接口。
+- `drivers/` + `hal/`：执行器与传感器驱动，以及底层硬件访问。
+- `control/`：设备侧自动控制线程与阈值闭环控制。
+- `app/`：MQTT 通信、LLaMA 客户端、串口与设备身份等通用业务能力。
+- `esp32_s3/`：传感器采集与 UDP 广播固件代码。
+- `ets/pages/` + `qt/`：前端页面与上位机侧联调入口。
 
 ## 目录
 - [自动控制（设备侧闭环）](#自动控制设备侧闭环)
@@ -80,13 +80,31 @@
 
 ### Qt/MQTT 下发命令
 
-默认命令 topic：
+### MQTT 设备自动发现（Retained Message）
+
+为实现设备的自动发现与绑定，本系统基于 MQTT 保留消息机制设计了轻量级设备发现流程：
+系统约定全局固定的设备发现主题前缀为 `<prefix>/announce/#`（默认 prefix 为 `ciallo_ohos`）；
+开发板上线后，首先将自身的硬件唯一 ID（芯片/板级唯一 ID）、设备类型、数据/控制 topic 等信息封装为 JSON 消息，
+以保留消息（Retained Message）的形式发布至 `<prefix>/announce/<deviceId>`；
+Qt 跨平台客户端启动后，先订阅 `<prefix>/announce/#`，即可立即获取当前设备的唯一标识，
+并自动完成数据/控制 topic 的拼接与绑定，无需人工干预。
+
+说明：`<prefix>` 可通过前端的 Topic 输入框修改（例如将 `ciallo_ohos/sensors` 改为 `myproj/sensors`），
+客户端/设备侧会随之前缀自动切换 announce/data/control 的命名空间。
+
+推荐命令 topic（按设备隔离）：
+
+```text
+ciallo_ohos/<deviceId>/control
+```
+
+其中 `<deviceId>` 为设备侧芯片/板级唯一 ID（用于 discovery/payload/topic）。
+
+兼容模式（公共控制通道）：
 
 ```text
 ciallo_ohos/control
 ```
-
-其中 `<deviceId>` 默认取设备侧 `configMqtt(..., clientId, ...)` 的 clientId。
 
 推荐 Payload 使用一层包装字段 `mode`（字段可选；enabled 支持 `true/false/0/1`）：
 
@@ -142,7 +160,24 @@ ciallo_ohos/control
 
 ## 土壤湿度传感器
 
-**头文件**: `soil_moisture.h`
+**头文件**: `drivers/inc/soil_moisture.h`
+
+### ETS/NAPI 接口（@ohos.myproject）
+
+土壤湿度数据**已改为通过统一的数据获取接口**：
+
+```typescript
+function getDataByKey(key: string): number;
+```
+
+**示例**：获取土壤湿度百分比
+```typescript
+const soilHumidity = myproject.getDataByKey("SoilHumi");
+```
+
+说明：
+- 土壤湿度传感器外设已更换，现通过 ESP32-S3 采集并经 WiFi UDP 广播到主板。
+- 底层 C/C++ 驱动函数（如 `soil_moisture_read_raw`）仍保留供设备侧自动控制等内部逻辑使用，但 ETS 侧统一通过 `getDataByKey()` 获取。
 
 ### 宏定义
 
@@ -160,7 +195,7 @@ ciallo_ohos/control
 - `SOIL_MOISTURE_ERROR`: -1 - 一般错误
 - `SOIL_MOISTURE_ADC_ERR`: -2 - ADC读取错误
 
-### 函数
+### C/C++ 驱动函数（内部使用）
 
 ```c
 int soil_moisture_init(void);
@@ -184,7 +219,7 @@ int soil_moisture_read_status(int *status);
 
 ## SG90舵机控制
 
-**头文件**: `sg90.h`
+**头文件**: `drivers/inc/sg90.h`
 
 ### 宏定义
 
@@ -216,7 +251,7 @@ int SG90_Close(void);
 
 ## 水泵控制
 
-**头文件**: `pump_control.h`
+**头文件**: `drivers/inc/pump_control.h`
 
 ### 函数
 
@@ -247,7 +282,7 @@ int pump_deinit(void);
 
 ## 串口通信
 
-**头文件**: `myserial.h`
+**头文件**: `app/inc/myserial.h`
 
 ### 宏定义
 
@@ -283,9 +318,25 @@ float get_data_by_key(char *key);
 
 ## 光敏传感器
 
-**头文件**: `light_sensor.h`
+**头文件**: `drivers/inc/light_sensor.h`
 
-### 函数
+### ETS/NAPI 接口（@ohos.myproject）
+
+光照强度数据**已改为通过统一的数据获取接口**：
+
+```typescript
+function getDataByKey(key: string): number;
+```
+
+**示例**：获取光照强度（对应键名需根据实际串口/UDP 数据确定，如 `"Light"` 或 `"Lux"`）
+```typescript
+const lightIntensity = myproject.getDataByKey("Light");
+```
+
+说明：
+- 底层 C/C++ 驱动函数（如 `light_sensor_read`）仍保留供设备侧自动控制等内部逻辑使用，但 ETS 侧统一通过 `getDataByKey()` 获取。
+
+### C/C++ 驱动函数（内部使用）
 
 ```c
 int light_sensor_init(void);
@@ -304,7 +355,7 @@ float light_sensor_to_percentage(int adc_value);
 
 ## LED控制
 
-**头文件**: `led_control.h`
+**头文件**: `drivers/inc/led_control.h`
 
 ### 宏定义
 
@@ -353,7 +404,7 @@ int LedDeinit(void);
 
 ## 风扇控制
 
-**头文件**: `fan_control.h`
+**头文件**: `drivers/inc/fan_control.h`
 
 ### 宏定义
 
@@ -405,7 +456,7 @@ int stopMotor();
 
 ## 蜂鸣器控制
 
-**头文件**: `buzzer_control.h`
+**头文件**: `drivers/inc/buzzer_control.h`
 
 ### 函数
 
@@ -431,7 +482,7 @@ int BuzzerDeinit(void);
 
 ## LLaMA客户端
 
-**头文件**: `llama_client.h`
+**头文件**: `app/inc/llama_client.h`
 
 ### 结构体
 

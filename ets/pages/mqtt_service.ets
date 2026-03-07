@@ -17,7 +17,7 @@ export class MqttService {
   private clientId: string = '';
   private username: string = '';
   private password: string = '';
-  private topic: string = 'ciallo_ohos/sensors'; // 默认主题
+  private topicPrefix: string = 'ciallo_ohos'; // 默认 topic 前缀（命名空间）
 
   // 单例模式
   public static getInstance(): MqttService {
@@ -58,17 +58,30 @@ export class MqttService {
     this.password = password;
   }
   
-  // 设置发布主题
+  // 设置 topic 前缀（兼容旧方法名：setTopic/getTopic）
   public setTopic(topic: string): void {
-    if (topic && topic.trim() !== '') {
-      this.topic = topic;
-      console.info(`MQTT: 主题已设置为 ${topic}`);
+    if (!topic) {
+      return;
     }
+
+    const trimmed = topic.trim();
+    if (trimmed === '') {
+      return;
+    }
+
+    // 只取第一段作为 prefix（例如输入 ciallo_ohos 或 ciallo_ohos/xxx 都视为 ciallo_ohos）
+    const slash = trimmed.indexOf('/');
+    this.topicPrefix = slash > 0 ? trimmed.substring(0, slash) : trimmed;
+    console.info(`MQTT: topic 前缀已设置为 ${this.topicPrefix}`);
   }
-  
-  // 获取当前主题
+
   public getTopic(): string {
-    return this.topic;
+    return this.topicPrefix;
+  }
+
+  private getTopicPrefixOrDefault(): string {
+    const prefix = this.topicPrefix && this.topicPrefix.trim() !== '' ? this.topicPrefix.trim() : 'ciallo_ohos';
+    return prefix;
   }
 
   // 连接到MQTT服务器
@@ -132,18 +145,19 @@ export class MqttService {
   }
 
   // 发布传感器消息（组包/采集由原生侧完成）
-  public async publishSensor(topic: string, qos: number = 0): Promise<boolean> {
+  public async publishSensor(qos: number = 0): Promise<boolean> {
     if (this.connectionStatus !== MqttConnectionStatus.CONNECTED) {
       console.error('MQTT: 未连接到服务器，无法发布消息');
       return false;
     }
 
     try {
+      const prefix = this.getTopicPrefixOrDefault();
       // publishMqtt(topic, haveImage, qos)
       // haveImage=false：原生侧采集并按 Qt 端所需 JSON 格式发布
-      const ok = await myproject.publishMqtt(topic, false, qos);
+      const ok = await myproject.publishMqtt(prefix, false, qos);
       if (ok) {
-        console.info(`MQTT消息发布成功: Topic=${topic}`);
+        console.info(`MQTT消息发布成功: prefix=${prefix}`);
         return true;
       } else {
         console.error('MQTT消息发布失败(原生)');
@@ -159,7 +173,7 @@ export class MqttService {
 
   // 上传传感器数据（组包/采集由原生侧完成）
   public async uploadSensorData(): Promise<boolean> {
-    return this.publishSensor(this.topic, 1);
+    return this.publishSensor(1);
   }
 
   // 上传图片数据 - 原生侧固定读取 PHOTO_PATH 并做 Base64 编码
@@ -170,13 +184,14 @@ export class MqttService {
     }
 
     try {
-      console.info(`MQTT: 开始发布图片(作为传感器JSON的可选字段, PHOTO_PATH), topic=${this.topic}`);
+      const prefix = this.getTopicPrefixOrDefault();
+      console.info(`MQTT: 开始发布图片(作为传感器JSON的可选字段, PHOTO_PATH), prefix=${prefix}`);
 
       // publishMqtt(topic, haveImage, qos)
       // 当 haveImage=true 时，原生侧会读取 PHOTO_PATH，Base64 后写入 JSON 的 image 字段再发布。
-      const ok = await myproject.publishMqtt(this.topic, true, 1);
+      const ok = await myproject.publishMqtt(prefix, true, 1);
       if (ok) {
-        console.info(`MQTT图片发布成功(含传感器JSON): Topic=${this.topic}`);
+        console.info(`MQTT图片发布成功(含传感器JSON): prefix=${prefix}`);
         return true;
       } else {
         console.error('MQTT图片发布失败(原生)');

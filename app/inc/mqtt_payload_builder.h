@@ -11,6 +11,11 @@ void SetMqttPayloadDeviceId(const std::string &deviceId);
 // Get deviceId currently used in payload builder.
 std::string GetMqttPayloadDeviceId();
 
+// Set/Get MQTT topic prefix (namespace), e.g. "ciallo_ohos".
+// This prefix is used for per-device topics and discovery announce topics.
+void SetMqttTopicPrefix(const std::string &prefix);
+std::string GetMqttTopicPrefix();
+
 // Build JSON payload for sensor topic.
 // Format matches the Qt client parser:
 // {"deviceId":"...","timestamp":"...","sensors":{...}}

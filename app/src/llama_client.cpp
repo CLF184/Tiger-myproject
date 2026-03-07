@@ -9,6 +9,8 @@
 #include <iostream>
 #include <sstream>
 #include "llama_client.h"
+
+#include "cJSON.h"
 // #include "hilog/log.h"
 
 // #define LOG_TAG "LlamaClient"
@@ -18,52 +20,76 @@
 
 namespace llama {
 
+static std::string CreateJsonRequestCjson(const LlamaRequestParams& params,
+                                         const std::vector<std::pair<std::string, std::string>>& messageHistory,
+                                         const std::string& systemMessage,
+                                         float temperature,
+                                         int max_tokens)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return "{}";
+    }
+
+    bool ok = true;
+    cJSON *messages = cJSON_AddArrayToObject(root, "messages");
+    ok = ok && (messages != nullptr);
+
+    auto addMessage = [&ok, messages](const char *role, const std::string &content) {
+        if (!ok) return;
+        cJSON *msg = cJSON_CreateObject();
+        if (msg == nullptr) {
+            ok = false;
+            return;
+        }
+        if (cJSON_AddStringToObject(msg, "role", role) == nullptr ||
+            cJSON_AddStringToObject(msg, "content", content.c_str()) == nullptr) {
+            cJSON_Delete(msg);
+            ok = false;
+            return;
+        }
+        cJSON_AddItemToArray(messages, msg);
+    };
+
+    if (!systemMessage.empty()) {
+        addMessage("system", systemMessage);
+    }
+
+    for (const auto &it : messageHistory) {
+        addMessage(it.first.c_str(), it.second);
+    }
+
+    if (!params.prompt.empty()) {
+        addMessage("user", params.prompt);
+    }
+
+    ok = ok && (cJSON_AddNumberToObject(root, "temperature", static_cast<double>(temperature)) != nullptr);
+    ok = ok && (cJSON_AddNumberToObject(root, "max_tokens", max_tokens) != nullptr);
+    ok = ok && (cJSON_AddBoolToObject(root, "stream", params.stream ? 1 : 0) != nullptr);
+
+    if (!ok) {
+        cJSON_Delete(root);
+        return "{}";
+    }
+
+    char *printed = cJSON_PrintUnformatted(root);
+    if (printed == nullptr) {
+        cJSON_Delete(root);
+        return "{}";
+    }
+    std::string out(printed);
+    cJSON_free(printed);
+    cJSON_Delete(root);
+    return out;
+}
+
 // 简单的JSON构建函数，使用OpenAI API格式
 std::string createJsonRequest(const LlamaRequestParams& params,
                               const std::vector<std::pair<std::string, std::string>>& messageHistory,
                               const std::string& systemMessage = "",
                               float temperature = 0.8f,
                               int max_tokens = 1024) {
-    std::stringstream ss;
-    ss << "{";
-    
-    ss << "\"messages\":[";
-    
-    // 添加system消息（如果有）
-    if (!systemMessage.empty()) {
-        ss << "{\"role\":\"system\",\"content\":\"" << systemMessage << "\"}";
-        
-        // 如果有历史或prompt，则添加逗号
-        if (!messageHistory.empty() || !params.prompt.empty()) {
-            ss << ",";
-        }
-    }
-    
-    // 添加消息历史
-    if (!messageHistory.empty()) {
-        for (size_t i = 0; i < messageHistory.size(); ++i) {
-            if (i > 0) ss << ",";
-            ss << "{\"role\":\"" << messageHistory[i].first << "\","
-               << "\"content\":\"" << messageHistory[i].second << "\"}";
-        }
-        
-        // 如果有新的提示，则添加逗号
-        if (!params.prompt.empty()) {
-            ss << ",";
-        }
-    }
-    
-    // 如果有新的提示，则添加为用户消息
-    if (!params.prompt.empty()) {
-        ss << "{\"role\":\"user\",\"content\":\"" << params.prompt << "\"}";
-    }
-    
-    ss << "],";
-    ss << "\"temperature\":" << temperature << ","
-       << "\"max_tokens\":" << max_tokens << ","
-       << "\"stream\":" << (params.stream ? "true" : "false")
-       << "}";
-    return ss.str();
+    return CreateJsonRequestCjson(params, messageHistory, systemMessage, temperature, max_tokens);
 }
 
 LlamaClient::LlamaClient(const std::string& host, int port, const std::string& systemMessage,
@@ -140,71 +166,86 @@ std::string LlamaClient::serializeRequest(const LlamaRequestParams& params) {
 
 LlamaResponse LlamaClient::parseResponse(const std::string& json) {
     LlamaResponse response;
-    
-    // 简单的OpenAI格式JSON解析
-    // 查找id
-    size_t idStart = json.find("\"id\":\"");
-    if (idStart != std::string::npos) {
-        idStart += 6; // "id":"的长度
-        size_t idEnd = json.find("\"", idStart);
-        if (idEnd != std::string::npos) {
-            response.id = json.substr(idStart, idEnd - idStart);
+
+    if (json.empty()) {
+        return response;
+    }
+
+    cJSON *root = cJSON_Parse(json.c_str());
+    if (root == nullptr) {
+        response.error = "Invalid JSON response";
+        return response;
+    }
+
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
+    if (cJSON_IsString(id) && id->valuestring != nullptr) {
+        response.id = id->valuestring;
+    }
+
+    cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+    if (cJSON_IsObject(err)) {
+        cJSON *msg = cJSON_GetObjectItemCaseSensitive(err, "message");
+        if (cJSON_IsString(msg) && msg->valuestring != nullptr) {
+            response.error = msg->valuestring;
+        } else {
+            response.error = "Server returned error";
+        }
+        cJSON_Delete(root);
+        return response;
+    }
+
+    cJSON *choices = cJSON_GetObjectItemCaseSensitive(root, "choices");
+    if (!cJSON_IsArray(choices) || cJSON_GetArraySize(choices) <= 0) {
+        cJSON_Delete(root);
+        return response;
+    }
+
+    cJSON *choice0 = cJSON_GetArrayItem(choices, 0);
+    if (!cJSON_IsObject(choice0)) {
+        cJSON_Delete(root);
+        return response;
+    }
+
+    cJSON *finishReason = cJSON_GetObjectItemCaseSensitive(choice0, "finish_reason");
+    if (finishReason != nullptr && !cJSON_IsNull(finishReason)) {
+        response.finished = true;
+    }
+    if (cJSON_IsString(finishReason) && finishReason->valuestring != nullptr) {
+        std::string reason = finishReason->valuestring;
+        if (reason == "stop") {
+            response.finished = true;
         }
     }
-    
-    // 查找内容
-    size_t contentStart = json.find("\"content\":\"");
-    if (contentStart != std::string::npos) {
-        contentStart += 11; // "content":"的长度
-        size_t contentEnd = json.find("\"", contentStart);
-        if (contentEnd != std::string::npos) {
-            response.text = json.substr(contentStart, contentEnd - contentStart);
+
+    // 非流式：choices[0].message.content / role
+    cJSON *message = cJSON_GetObjectItemCaseSensitive(choice0, "message");
+    if (cJSON_IsObject(message)) {
+        cJSON *content = cJSON_GetObjectItemCaseSensitive(message, "content");
+        if (cJSON_IsString(content) && content->valuestring != nullptr) {
+            response.text = content->valuestring;
+        }
+        cJSON *role = cJSON_GetObjectItemCaseSensitive(message, "role");
+        if (cJSON_IsString(role) && role->valuestring != nullptr) {
+            response.role = role->valuestring;
         }
     }
-    
-    // 流式传输时，可能会有delta
+
+    // 流式：choices[0].delta.content / role
     if (response.text.empty()) {
-        size_t deltaStart = json.find("\"delta\":{\"content\":\"");
-        if (deltaStart != std::string::npos) {
-            deltaStart += 20; // "delta":{"content":"的长度
-            size_t deltaEnd = json.find("\"", deltaStart);
-            if (deltaEnd != std::string::npos) {
-                response.text = json.substr(deltaStart, deltaEnd - deltaStart);
+        cJSON *delta = cJSON_GetObjectItemCaseSensitive(choice0, "delta");
+        if (cJSON_IsObject(delta)) {
+            cJSON *content = cJSON_GetObjectItemCaseSensitive(delta, "content");
+            if (cJSON_IsString(content) && content->valuestring != nullptr) {
+                response.text = content->valuestring;
+            }
+            cJSON *role = cJSON_GetObjectItemCaseSensitive(delta, "role");
+            if (cJSON_IsString(role) && role->valuestring != nullptr) {
+                response.role = role->valuestring;
             }
         }
     }
-    
-    // 查找角色
-    size_t roleStart = json.find("\"role\":\"");
-    if (roleStart != std::string::npos) {
-        roleStart += 8; // "role":"的长度
-        size_t roleEnd = json.find("\"", roleStart);
-        if (roleEnd != std::string::npos) {
-            response.role = json.substr(roleStart, roleEnd - roleStart);
-        }
-    }
-    
-    // 查找错误信息
-    size_t errorStart = json.find("\"error\":{\"message\":\"");
-    if (errorStart != std::string::npos) {
-        errorStart += 19; // "error":{"message":"的长度
-        size_t errorEnd = json.find("\"", errorStart);
-        if (errorEnd != std::string::npos) {
-            response.error = json.substr(errorStart, errorEnd - errorStart);
-        }
-    }
-    
-    // 查找结束标志
-    size_t finishReasonPos = json.find("\"finish_reason\":\"");
-    if (finishReasonPos != std::string::npos) {
-        finishReasonPos += 16; // "finish_reason":"的长度
-        size_t finishReasonEnd = json.find("\"", finishReasonPos);
-        if (finishReasonEnd != std::string::npos) {
-            std::string reason = json.substr(finishReasonPos, finishReasonEnd - finishReasonPos);
-            response.finished = (reason == "stop");
-        }
-    }
-    
+
+    cJSON_Delete(root);
     return response;
 }
 
@@ -337,10 +378,20 @@ bool LlamaClient::sendRequest(const LlamaRequestParams& params, ResponseCallback
                 while (nextPos != std::string::npos) {
                     std::string line = responseData.substr(pos, nextPos - pos);
                     pos = nextPos + 1;
+
+                    if (!line.empty() && line.back() == '\r') {
+                        line.pop_back();
+                    }
                     
                     // 解析SSE数据块
                     if (line.find("data:") == 0) {
                         std::string jsonData = line.substr(5); // 跳过"data:"
+                        while (!jsonData.empty() && (jsonData.front() == ' ' || jsonData.front() == '\t')) {
+                            jsonData.erase(0, 1);
+                        }
+                        if (!jsonData.empty() && jsonData.back() == '\r') {
+                            jsonData.pop_back();
+                        }
                         
                         // 处理流结束标记
                         if (jsonData.find("[DONE]") != std::string::npos) {

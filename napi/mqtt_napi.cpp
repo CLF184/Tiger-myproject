@@ -1,10 +1,16 @@
 #include <string>
 #include <vector>
+#include <cctype>
+#include <ctime>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
 
 #include "napi/native_api.h"
 #include "napi/native_common.h"
 #include "napi/native_node_api.h"
 
+#include "device_identity.h"
 #include "mqttc_client.h"
 #include "mqtt_global.h"
 
@@ -12,6 +18,56 @@
 
 
 static mqttc::MqttCClient &g_mqttClient = mqttc::GetMqttClient();
+
+namespace {
+
+std::mutex g_discoveryMu;
+std::string g_lastAnnouncedPrefix;
+
+static bool LooksLikeDefaultRandomClientId(const std::string &clientId)
+{
+    // ETS 默认：device_<random>
+    const std::string prefix = "device_";
+    if (clientId.size() <= prefix.size()) return false;
+    if (clientId.rfind(prefix, 0) != 0) return false;
+    for (size_t i = prefix.size(); i < clientId.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(clientId[i]))) return false;
+    }
+    return true;
+}
+
+static std::string EnsureDeviceId()
+{
+    std::string id = mqttc::GetMqttPayloadDeviceId();
+    if (!id.empty() && id != "unknown") {
+        return device_identity::SanitizeTopicSegment(id);
+    }
+    id = device_identity::GetBestEffortChipId();
+    mqttc::SetMqttPayloadDeviceId(id);
+    return device_identity::SanitizeTopicSegment(id);
+}
+
+static std::string NormalizePrefixInput(const std::string &input)
+{
+    // Accept either "<prefix>" or "<prefix>/..."; return sanitized prefix.
+    if (input.empty()) return std::string();
+    const size_t slash = input.find('/');
+    std::string prefix = (slash == std::string::npos) ? input : input.substr(0, slash);
+    prefix = device_identity::SanitizeTopicSegment(prefix);
+    if (prefix.empty() || prefix == "unknown") return std::string();
+    return prefix;
+}
+
+static void PublishDiscoveryRetainedBestEffort()
+{
+    const std::string deviceId = EnsureDeviceId();
+
+    const std::string prefix = mqttc::GetMqttTopicPrefix();
+    std::string err;
+    (void)g_mqttClient.publishDiscoveryAnnounceRetained(prefix, deviceId, "unionpi", &err);
+}
+
+} // namespace
 
 static napi_value configMqtt(napi_env env, napi_callback_info info)
 {
@@ -32,15 +88,24 @@ static napi_value configMqtt(napi_env env, napi_callback_info info)
 
     NAPI_CALL(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
 
+    if (argc < 1) {
+        status = -1;
+        NAPI_CALL(env, napi_create_int32(env, status, &result));
+        return result;
+    }
+
+    if (argc < 2) {
+        status = -2;
+        NAPI_CALL(env, napi_create_int32(env, status, &result));
+        return result;
+    }
+
     if (argc >= 1) {
         napi_valuetype t;
         NAPI_CALL(env, napi_typeof(env, args[0], &t));
         if (t == napi_string) {
             NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], brokerUrl, sizeof(brokerUrl) - 1, &brokerUrlLen));
         }
-    } else {
-        status = -1;
-        goto finish;
     }
 
     if (argc >= 2) {
@@ -49,9 +114,6 @@ static napi_value configMqtt(napi_env env, napi_callback_info info)
         if (t == napi_string) {
             NAPI_CALL(env, napi_get_value_string_utf8(env, args[1], clientId, sizeof(clientId) - 1, &clientIdLen));
         }
-    } else {
-        status = -2;
-        goto finish;
     }
 
     if (argc >= 3) {
@@ -70,10 +132,19 @@ static napi_value configMqtt(napi_env env, napi_callback_info info)
         }
     }
 
-    g_mqttClient.configure(brokerUrl, clientId, username, password);
-    mqttc::SetMqttPayloadDeviceId(std::string(clientId, clientIdLen));
+    const std::string chipId = device_identity::GetBestEffortChipId();
 
-finish:
+    // default topic prefix; may be overridden later based on publish topic input.
+    mqttc::SetMqttTopicPrefix("ciallo_ohos");
+
+    std::string clientIdStr(clientId, clientIdLen);
+    if (clientIdStr.empty() || LooksLikeDefaultRandomClientId(clientIdStr)) {
+        clientIdStr = chipId;
+    }
+
+    g_mqttClient.configure(brokerUrl, clientIdStr, username, password);
+    // 设备侧 deviceId 统一使用芯片/板级唯一 ID，用于 payload 与 topic 拼接。
+    mqttc::SetMqttPayloadDeviceId(chipId);
     NAPI_CALL(env, napi_create_int32(env, status, &result));
     return result;
 }
@@ -102,6 +173,14 @@ static void ConnectExecute(napi_env env, void *data)
         if (ctx->error.empty()) {
             ctx->error = "connect failed";
         }
+        return;
+    }
+
+    // Best-effort: publish retained discovery message once after successful connect.
+    PublishDiscoveryRetainedBestEffort();
+    {
+        std::lock_guard<std::mutex> lock(g_discoveryMu);
+        g_lastAnnouncedPrefix = mqttc::GetMqttTopicPrefix();
     }
 }
 
@@ -195,8 +274,8 @@ static napi_value publishMqtt(napi_env env, napi_callback_info info)
     size_t argc = 3;
     napi_value args[3];
 
-    char topic[256] = {0};
-    size_t topicLen = 0;
+    char prefixInput[256] = {0};
+    size_t prefixInputLen = 0;
     int qos = 0;
     bool haveImage = false;
 
@@ -211,7 +290,7 @@ static napi_value publishMqtt(napi_env env, napi_callback_info info)
         return nullptr;
     }
 
-    NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], topic, sizeof(topic) - 1, &topicLen));
+    NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], prefixInput, sizeof(prefixInput) - 1, &prefixInputLen));
 
     napi_valuetype haveImageType;
     NAPI_CALL(env, napi_typeof(env, args[1], &haveImageType));
@@ -237,7 +316,37 @@ static napi_value publishMqtt(napi_env env, napi_callback_info info)
 
     auto *ctx = new MqttAsyncContext();
     ctx->success = false;
-    ctx->topic.assign(topic, topicLen);
+    {
+        const std::string deviceId = EnsureDeviceId();
+        const std::string input(prefixInput, prefixInputLen);
+
+        // publishMqtt(arg0) 仅作为 topic 前缀（命名空间）使用。
+        // 原生侧统一发布到 <prefix>/<deviceId>/sensors。
+        std::string prefix = NormalizePrefixInput(input);
+        if (!prefix.empty()) {
+            mqttc::SetMqttTopicPrefix(prefix);
+        } else {
+            prefix = mqttc::GetMqttTopicPrefix();
+            if (prefix.empty()) prefix = "ciallo_ohos";
+        }
+
+        // 若 prefix 发生变化，仅补发一次 retained announce（而不是每次上传都发）。
+        if (g_mqttClient.isConnected()) {
+            bool needAnnounce = false;
+            {
+                std::lock_guard<std::mutex> lock(g_discoveryMu);
+                if (g_lastAnnouncedPrefix != prefix) {
+                    needAnnounce = true;
+                    g_lastAnnouncedPrefix = prefix;
+                }
+            }
+            if (needAnnounce) {
+                PublishDiscoveryRetainedBestEffort();
+            }
+        }
+
+        ctx->topic = prefix + "/" + deviceId + "/sensors";
+    }
     ctx->qos = qos;
     ctx->isImage = haveImage;
 

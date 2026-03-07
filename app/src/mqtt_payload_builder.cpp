@@ -12,12 +12,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "cJSON.h"
+
 #include "myserial.h" // get_data_by_key + PHOTO_PATH
 #include "auto_control.h" // control::AutoControlThresholds / GetThresholds
 
 namespace mqttc {
 
 static std::string g_deviceId;
+static std::string g_topicPrefix = "ciallo_ohos";
 
 void SetMqttPayloadDeviceId(const std::string &deviceId)
 {
@@ -29,30 +32,17 @@ std::string GetMqttPayloadDeviceId()
     return g_deviceId;
 }
 
-static std::string JsonEscape(const std::string &in)
+void SetMqttTopicPrefix(const std::string &prefix)
 {
-    std::string out;
-    out.reserve(in.size() + 8);
-    for (char c : in) {
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"': out += "\\\""; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(static_cast<unsigned char>(c)));
-                    out += buf;
-                } else {
-                    out += c;
-                }
-        }
+    if (prefix.empty()) {
+        return;
     }
-    return out;
+    g_topicPrefix = prefix;
+}
+
+std::string GetMqttTopicPrefix()
+{
+    return g_topicPrefix;
 }
 
 static std::string IsoTimestampUtc()
@@ -211,42 +201,58 @@ bool BuildSensorPayloadJson(bool includeImage, std::string &outJson, std::string
     const std::string deviceId = g_deviceId.empty() ? "unknown" : g_deviceId;
     const std::string ts = IsoTimestampUtc();
 
-    // Build JSON matching Qt/ETS client expectations，包含全部传感器数值。
-    // Note: keep numeric fields as JSON numbers.
-    char sensorsBuf[512];
-    std::snprintf(
-        sensorsBuf, sizeof(sensorsBuf),
-        "\"sensors\":{"
-        "\"soilMoisture\":%d,\"lightLevel\":%d,\"temperature\":%.2f,\"humidity\":%d,"
-        "\"formaldehyde\":%.4f,\"tvoc\":%.4f,\"co2\":%d,"
-        "\"soilTemperature\":%.2f,\"ec\":%.0f,\"ph\":%.1f,"
-        "\"nitrogen\":%.0f,\"phosphorus\":%.0f,\"potassium\":%.0f,"
-        "\"salt\":%.0f,\"tds\":%.0f,\"alarm\":%d}",
-        soilMoisture, lightLevel, static_cast<double>(temperature), humidity,
-        static_cast<double>(formaldehyde), static_cast<double>(tvoc), co2,
-        static_cast<double>(soilTemp), static_cast<double>(ec), static_cast<double>(ph),
-        static_cast<double>(n), static_cast<double>(p), static_cast<double>(k),
-        static_cast<double>(salt), static_cast<double>(tds), alarm);
-
-    outJson.clear();
-    outJson.reserve(includeImage ? 512 + imageBase64.size() : 256);
-    outJson += '{';
-    outJson += "\"deviceId\":\"";
-    outJson += JsonEscape(deviceId);
-    outJson += "\",";
-    outJson += "\"timestamp\":\"";
-    outJson += JsonEscape(ts);
-    outJson += "\",";
-    outJson += sensorsBuf;
-
-    if (includeImage) {
-        outJson += ",\"image\":\"";
-        outJson += imageBase64;
-        outJson += "\"";
+    cJSON *root = cJSON_CreateObject();
+    if (root == nullptr) {
+        if (errMsg) *errMsg = "cJSON_CreateObject failed";
+        return false;
     }
 
-    outJson += '}';
+    bool ok = true;
+    ok = ok && (cJSON_AddStringToObject(root, "deviceId", deviceId.c_str()) != nullptr);
+    ok = ok && (cJSON_AddStringToObject(root, "timestamp", ts.c_str()) != nullptr);
 
+    cJSON *sensors = cJSON_AddObjectToObject(root, "sensors");
+    ok = ok && (sensors != nullptr);
+    if (ok) {
+        ok = ok && (cJSON_AddNumberToObject(sensors, "soilMoisture", soilMoisture) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "lightLevel", lightLevel) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "temperature", static_cast<double>(temperature)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "humidity", humidity) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "formaldehyde", static_cast<double>(formaldehyde)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "tvoc", static_cast<double>(tvoc)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "co2", co2) != nullptr);
+
+        ok = ok && (cJSON_AddNumberToObject(sensors, "soilTemperature", static_cast<double>(soilTemp)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "ec", static_cast<double>(ec)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "ph", static_cast<double>(ph)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "nitrogen", static_cast<double>(n)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "phosphorus", static_cast<double>(p)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "potassium", static_cast<double>(k)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "salt", static_cast<double>(salt)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "tds", static_cast<double>(tds)) != nullptr);
+        ok = ok && (cJSON_AddNumberToObject(sensors, "alarm", alarm) != nullptr);
+    }
+
+    if (includeImage) {
+        ok = ok && (cJSON_AddStringToObject(root, "image", imageBase64.c_str()) != nullptr);
+    }
+
+    if (!ok) {
+        if (errMsg) *errMsg = "cJSON add field failed";
+        cJSON_Delete(root);
+        return false;
+    }
+
+    char *printed = cJSON_PrintUnformatted(root);
+    if (printed == nullptr) {
+        if (errMsg) *errMsg = "cJSON_PrintUnformatted failed";
+        cJSON_Delete(root);
+        return false;
+    }
+
+    outJson.assign(printed);
+    cJSON_free(printed);
+    cJSON_Delete(root);
     return true;
 }
 

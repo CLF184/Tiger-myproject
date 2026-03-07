@@ -115,7 +115,9 @@ void MqttConfigDialog::loadSettings()
     // 使用指定的默认值
     brokerAddressEdit->setText(settings.value("mqtt/brokerAddress", "broker.emqx.io").toString());
     brokerPortEdit->setText(settings.value("mqtt/brokerPort", "1883").toString());
-    dataTopicEdit->setText(settings.value("mqtt/dataTopic", "ciallo_ohos/sensors").toString());
+    // 输入框仅用于指定 topic 前缀（命名空间），Qt 将通过 retained discovery 自动推导实际数据/控制 topic。
+    dataTopicEdit->setText(settings.value("mqtt/dataTopic", "").toString());
+    dataTopicEdit->setPlaceholderText(tr("例如 ciallo_ohos（仅前缀，可改；将订阅 <前缀>/announce/# 自动发现）"));
 }
 
 void MqttConfigDialog::saveSettings()

@@ -665,16 +665,28 @@ void MainWindow::showMqttConfigDialog()
     if (dialog.exec() == QDialog::Accepted) {
         mqttBrokerAddress = dialog.brokerAddress();
         mqttBrokerPort = dialog.brokerPort();
-        mqttDataTopic = dialog.dataTopicName();
+        const QString topicInput = dialog.dataTopicName().trimmed();
 
-        // 控制命令统一使用公共通道，不依赖设备上报数据后再推导
-        mqttControlTopic = QStringLiteral("ciallo_ohos/control");
+        // 输入框仅用于指定命名空间前缀（默认 ciallo_ohos），后续一律通过 retained announce 自动发现。
+        mqttTopicPrefix = QStringLiteral("ciallo_ohos");
+        if (!topicInput.isEmpty()) {
+            const int slash = topicInput.indexOf('/');
+            mqttTopicPrefix = (slash > 0) ? topicInput.left(slash) : topicInput;
+        }
 
-        // 如果所有必填字段都已填写，则连接MQTT
-        if (!mqttBrokerAddress.isEmpty() && !mqttDataTopic.isEmpty()) {
+        // 发现主题固定：Qt 启动后先订阅该主题以自动发现设备（retained）。
+        mqttDiscoveryFilter = QStringLiteral("%1/announce/#").arg(mqttTopicPrefix);
+
+        // 控制/数据 topic 将在 discovery 后自动推导。
+        mqttControlTopic.clear();
+        mqttDataTopic.clear();
+        currentDeviceId.clear();
+
+        // 只要 broker 配置完整即可连接；data topic 可留空。
+        if (!mqttBrokerAddress.isEmpty()) {
             connectMQTT();
         } else {
-            QMessageBox::warning(this, "配置不完整", "MQTT服务器地址和数据主题是必填的。");
+            QMessageBox::warning(this, "配置不完整", "MQTT服务器地址是必填的。Topic 输入框仅用于设置前缀，设备发现将自动完成。 ");
         }
     } else {
         // 用户取消了，可以退出应用或使用默认值
@@ -736,7 +748,7 @@ void MainWindow::handleMqttStateChanged(QMqttClient::ClientState state)
 
     if (state == QMqttClient::Disconnected) {
         // 若未配置地址或主题，则不自动重连
-        if (mqttBrokerAddress.isEmpty() || mqttDataTopic.isEmpty()) {
+        if (mqttBrokerAddress.isEmpty()) {
             return;
         }
 
@@ -750,7 +762,7 @@ void MainWindow::handleMqttStateChanged(QMqttClient::ClientState state)
             mqttReconnectTimer = new QTimer(this);
             mqttReconnectTimer->setSingleShot(true);
             connect(mqttReconnectTimer, &QTimer::timeout, this, [this, maxAttempts]() {
-                if (mqttBrokerAddress.isEmpty() || mqttDataTopic.isEmpty()) {
+                if (mqttBrokerAddress.isEmpty()) {
                     return;
                 }
 
@@ -783,7 +795,7 @@ void MainWindow::reconnectMqtt()
     }
     mqttReconnectAttempts = 0;
 
-    if (mqttBrokerAddress.isEmpty() || mqttDataTopic.isEmpty()) {
+    if (mqttBrokerAddress.isEmpty()) {
         // 若尚未配置，弹出配置对话框
         showMqttConfigDialog();
         return;
@@ -796,12 +808,18 @@ void MainWindow::onMQTTConnected()
 {
     qDebug() << "已连接到MQTT代理";
 
-    // 订阅数据主题
-    QMqttSubscription *dataSubscription = mqttClient->subscribe(QMqttTopicFilter(mqttDataTopic));
-    if (!dataSubscription) {
-        qDebug() << "订阅数据主题失败";
+    // 订阅 discovery（优先）：能立刻收到 retained 设备信息。
+    if (mqttDiscoveryFilter.isEmpty()) {
+        if (mqttTopicPrefix.isEmpty()) {
+            mqttTopicPrefix = QStringLiteral("ciallo_ohos");
+        }
+        mqttDiscoveryFilter = QStringLiteral("%1/announce/#").arg(mqttTopicPrefix);
+    }
+    QMqttSubscription *discoverySub = mqttClient->subscribe(QMqttTopicFilter(mqttDiscoveryFilter), 1);
+    if (!discoverySub) {
+        qDebug() << "订阅发现主题失败:" << mqttDiscoveryFilter;
     } else {
-        qDebug() << "成功订阅数据主题:" << mqttDataTopic;
+        qDebug() << "成功订阅发现主题:" << mqttDiscoveryFilter;
     }
 }
 
@@ -809,6 +827,38 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
 {
     // 检查主题并处理消息
     QString topicStr = topic.name();
+
+    // discovery: <prefix>/announce/<deviceId>
+    if (!mqttTopicPrefix.isEmpty() && topicStr.startsWith(mqttTopicPrefix + QStringLiteral("/announce/"))) {
+        QJsonDocument doc = QJsonDocument::fromJson(message);
+        if (!doc.isObject()) {
+            qDebug() << "discovery JSON解析失败";
+            return;
+        }
+
+        QJsonObject obj = doc.object();
+        QString deviceId = obj.value("deviceId").toString();
+        if (deviceId.isEmpty()) {
+            return;
+        }
+
+        currentDeviceId = deviceId;
+        mqttDataTopic = QStringLiteral("%1/%2/sensors").arg(mqttTopicPrefix, deviceId);
+        mqttControlTopic = QStringLiteral("%1/%2/control").arg(mqttTopicPrefix, deviceId);
+
+        // discovery 可能先于数据到达：提前显示 deviceId
+        labelDeviceId->setText(QString("<b>🔌 设备ID:</b><br><span style='font-size:16px;'>%1</span>").arg(deviceId));
+
+        if (mqttClient && mqttClient->state() == QMqttClient::Connected) {
+            QMqttSubscription *dataSubscription = mqttClient->subscribe(QMqttTopicFilter(mqttDataTopic));
+            if (!dataSubscription) {
+                qDebug() << "订阅推导数据主题失败:" << mqttDataTopic;
+            } else {
+                qDebug() << "成功订阅推导数据主题:" << mqttDataTopic;
+            }
+        }
+        return;
+    }
 
     if (topicStr == mqttDataTopic) {
         // 处理传感器数据
@@ -821,16 +871,9 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
 
             QJsonObject obj = doc.object();
 
-            // 提取顶层属性
+            // 提取顶层属性（UI 展示用；topic 绑定以 discovery 为准）
             QString deviceId = obj["deviceId"].toString();
             QString timestamp = obj["timestamp"].toString();
-
-            // 记住最近的 deviceId，并推导控制命令 topic
-            if (!deviceId.isEmpty()) {
-                currentDeviceId = deviceId;
-                // 控制命令 topic 不再携带 device_id，统一使用公共通道
-                mqttControlTopic = QStringLiteral("ciallo_ohos/control");
-            }
             
             // 检查sensors对象是否存在
             if (!obj.contains("sensors") || !obj["sensors"].isObject()) {
@@ -841,7 +884,7 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
             // 获取sensors对象
             QJsonObject sensors = obj["sensors"].toObject();
             
-            // 从sensors对象中提取数据（环境 + 土壤/养分）
+            // 从 sensors 对象中提取数据（环境 + 土壤/养分）
             int soilMoisture = sensors["soilMoisture"].toInt();
             int lightLevel = sensors["lightLevel"].toInt();
             double temperature = sensors["temperature"].toDouble();
@@ -1053,7 +1096,10 @@ void MainWindow::publishModeObject(const QJsonObject &mode, const QString &succe
     }
 
     if (mqttControlTopic.isEmpty()) {
-        QMessageBox::warning(this, tr("控制 Topic 未配置"), tr("控制 topic 未配置，请检查 MQTT 配置。"));
+        QMessageBox::warning(this,
+                             tr("尚未发现设备"),
+                             tr("尚未收到设备 announce，无法确定控制 topic。请等待设备上线或检查订阅：%1")
+                                 .arg(mqttDiscoveryFilter));
         return;
     }
 
@@ -1080,7 +1126,10 @@ void MainWindow::publishControlObject(const QJsonObject &control, const QString 
     }
 
     if (mqttControlTopic.isEmpty()) {
-        QMessageBox::warning(this, tr("控制 Topic 未配置"), tr("控制 topic 未配置，请检查 MQTT 配置。"));
+        QMessageBox::warning(this,
+                             tr("尚未发现设备"),
+                             tr("尚未收到设备 announce，无法确定控制 topic。请等待设备上线或检查订阅：%1")
+                                 .arg(mqttDiscoveryFilter));
         return;
     }
 
