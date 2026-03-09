@@ -20,32 +20,36 @@
 #include "napi/native_node_api.h"
 
 #include "image_capture_callback_manager.h"
-#include "myserial.h"
 #include "sensor_data_provider.h"
 
 namespace {
 const char *kCaptureCmd = "CAPTURE";
 }
 
+/**
+ * @brief 通过 UDP 广播发送 capture 命令
+ * 
+ * @param env Node-API 环境
+ * @param info 回调信息
+ * @return napi_value 返回状态码
+ */
 static napi_value sendCapture(napi_env env, napi_callback_info info)
 {
     (void)info;
     napi_value result;
     int status = sensor::SendCaptureCommand(kCaptureCmd);
+    
     NAPI_CALL(env, napi_create_int32(env, status, &result));
     return result;
 }
 
-static napi_value onImageCaptured(napi_env env, napi_callback_info info)
-{
-    return ImageCaptureOn(env, info);
-}
-
-static napi_value offImageCaptured(napi_env env, napi_callback_info info)
-{
-    return ImageCaptureOff(env, info);
-}
-
+/**
+ * @brief 从 UDP 接收到的数据中根据键名获取对应的值
+ * 
+ * @param env Node-API 环境
+ * @param info 回调信息，包含参数
+ * @return napi_value 返回浮点数值
+ */
 static napi_value getDataByKey(napi_env env, napi_callback_info info)
 {
     napi_value result;
@@ -60,6 +64,7 @@ static napi_value getDataByKey(napi_env env, napi_callback_info info)
     if (argc >= 1) {
         NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], key, sizeof(key) - 1, &key_len));
         value = sensor::GetDataByKey(key);
+
         NAPI_CALL(env, napi_create_double(env, value, &result));
         return result;
     }
@@ -68,9 +73,40 @@ static napi_value getDataByKey(napi_env env, napi_callback_info info)
     return result;
 }
 
-napi_value RegisterSerialApis(napi_env env, napi_value exports)
+/**
+ * @brief 注册图片捕获回调函数
+ * 
+ * @param env Node-API 环境
+ * @param info 回调信息，包含回调函数参数
+ * @return napi_value 返回状态码
+ */
+static napi_value onImageCaptured(napi_env env, napi_callback_info info)
 {
-    sensor::SetDataChannel(sensor::DataChannel::SERIAL);
+    return ImageCaptureOn(env, info);
+}
+
+/**
+ * @brief 取消图片捕获回调函数
+ * 
+ * @param env Node-API 环境
+ * @param info 回调信息
+ * @return napi_value 返回状态码
+ */
+static napi_value offImageCaptured(napi_env env, napi_callback_info info)
+{
+    return ImageCaptureOff(env, info);
+}
+
+/**
+ * @brief 注册 UDP 相关的 NAPI 接口
+ * 
+ * @param env Node-API 环境
+ * @param exports 导出对象
+ * @return napi_value 返回导出对象
+ */
+napi_value RegisterUdpApis(napi_env env, napi_value exports)
+{
+    sensor::SetDataChannel(sensor::DataChannel::UDP);
 
     napi_property_descriptor desc[] = {
         DECLARE_NAPI_FUNCTION("sendCapture", sendCapture),

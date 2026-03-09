@@ -10,13 +10,14 @@
 #include <ctime>
 
 #include "buzzer_control.h"
+#include "cJSON.h"
 #include "fan_control.h"
 #include "led_control.h"
 #include "light_sensor.h"
 #include "mqtt_global.h"
 #include "mqtt_payload_builder.h"
-#include "myserial.h"
 #include "pump_control.h"
+#include "sensor_data_provider.h"
 #include "sg90.h"
 
 namespace control {
@@ -50,80 +51,57 @@ bool IsDaytime()
     return (hour >= 6 && hour < 18);
 }
 
-bool ParseBoolField(const std::string &json, const char *key, bool *out)
+bool GetBoolField(cJSON *obj, const char *key, bool *out)
 {
-    if (!key || !out) return false;
-    const std::string k = std::string("\"") + key + "\"";
-    auto pos = json.find(k);
-    if (pos == std::string::npos) return false;
-    pos = json.find(':', pos);
-    if (pos == std::string::npos) return false;
-    pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (obj == nullptr || key == nullptr || out == nullptr) {
+        return false;
+    }
 
-    if (json.compare(pos, 4, "true") == 0) {
-        *out = true;
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item == nullptr) {
+        return false;
+    }
+
+    if (cJSON_IsBool(item)) {
+        *out = cJSON_IsTrue(item);
         return true;
     }
-    if (json.compare(pos, 5, "false") == 0) {
-        *out = false;
+
+    if (cJSON_IsNumber(item)) {
+        *out = (item->valuedouble != 0.0);
         return true;
     }
-    if (pos < json.size() && (json[pos] == '0' || json[pos] == '1')) {
-        *out = (json[pos] == '1');
-        return true;
-    }
+
     return false;
 }
 
-bool ParseNumberField(const std::string &json, const char *key, double *out)
+bool GetNumberField(cJSON *obj, const char *key, double *out)
 {
-    if (!key || !out) return false;
-    const std::string k = std::string("\"") + key + "\"";
-    auto pos = json.find(k);
-    if (pos == std::string::npos) return false;
-    pos = json.find(':', pos);
-    if (pos == std::string::npos) return false;
-    pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (obj == nullptr || key == nullptr || out == nullptr) {
+        return false;
+    }
 
-    const char *start = json.c_str() + pos;
-    char *endp = nullptr;
-    double v = std::strtod(start, &endp);
-    if (endp == start) return false;
-    *out = v;
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item == nullptr || !cJSON_IsNumber(item)) {
+        return false;
+    }
+
+    *out = item->valuedouble;
     return true;
 }
 
-// 提取形如 "key": { ... } 的子对象内容，用于支持 {"mode": { ... }} 这种包装格式。
-bool ExtractObjectForKey(const std::string &json, const char *key, std::string *out)
+cJSON *GetObjectField(cJSON *obj, const char *key)
 {
-    if (!key || !out) return false;
-    const std::string k = std::string("\"") + key + "\"";
-    auto pos = json.find(k);
-    if (pos == std::string::npos) return false;
-    pos = json.find(':', pos);
-    if (pos == std::string::npos) return false;
-    pos++;
-    // 跳过空白
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n' || json[pos] == '\r')) pos++;
-    if (pos >= json.size() || json[pos] != '{') return false;
-
-    size_t start = pos;
-    int depth = 0;
-    for (size_t i = pos; i < json.size(); ++i) {
-        char c = json[i];
-        if (c == '{') {
-            depth++;
-        } else if (c == '}') {
-            depth--;
-            if (depth == 0) {
-                *out = json.substr(start, i - start + 1);
-                return true;
-            }
-        }
+    if (obj == nullptr || key == nullptr) {
+        return nullptr;
     }
-    return false;
+
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item == nullptr || !cJSON_IsObject(item)) {
+        return nullptr;
+    }
+
+    return item;
 }
 
 void ClampThresholds(AutoControlThresholds &t)
@@ -154,80 +132,87 @@ void ClampThresholds(AutoControlThresholds &t)
 
 void ApplyCommandJson(const std::string &jsonRaw)
 {
-    // 兼容三种格式：
-    // 1) 扁平阈值：{"enabled":true,"soil_on":1200,...}
-    // 2) 阈值包装：{"mode": {"enabled":true,"soil_on":1200,...}}
-    // 3) 单次控制包装：{"control": {"led":1,"pump":0,...}}
+    // 仅支持两种格式（互斥）：
+    // 1) 仅 mode：{"mode": {"enabled":true,"soil_on":1200,...}}
+    // 2) 仅 control：{"control": {"led":1,"pump":0,...}}
 
-    // 先解析阈值和开关（mode）
-    std::string modeObj;
-    const std::string *modeJsonPtr = &jsonRaw;
-    if (ExtractObjectForKey(jsonRaw, "mode", &modeObj)) {
-        modeJsonPtr = &modeObj;
-    }
-    const std::string &modeJson = *modeJsonPtr;
-
-    bool enabled;
-    if (ParseBoolField(modeJson, "enabled", &enabled)) {
-        g_enabled.store(enabled);
+    cJSON *root = cJSON_Parse(jsonRaw.c_str());
+    if (root == nullptr || !cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return;
     }
 
-    AutoControlThresholds next;
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        next = g_thresholds;
+    cJSON *modeObj = GetObjectField(root, "mode");
+    cJSON *controlObj = GetObjectField(root, "control");
+    if (modeObj == nullptr && controlObj == nullptr) {
+        cJSON_Delete(root);
+        return;
+    }
+    if (modeObj != nullptr && controlObj != nullptr) {
+        cJSON_Delete(root);
+        return;
     }
 
     double v;
-    if (ParseNumberField(modeJson, "soil_on", &v)) next.soil_on = static_cast<int>(v);
-    if (ParseNumberField(modeJson, "soil_off", &v)) next.soil_off = static_cast<int>(v);
-    if (ParseNumberField(modeJson, "light_on", &v)) next.light_on = static_cast<int>(v);
-    if (ParseNumberField(modeJson, "light_off", &v)) next.light_off = static_cast<int>(v);
-    if (ParseNumberField(modeJson, "temp_on", &v)) next.temp_on = v;
-    if (ParseNumberField(modeJson, "temp_off", &v)) next.temp_off = v;
-    if (ParseNumberField(modeJson, "ch2o_on", &v)) next.ch2o_on = v;
-    if (ParseNumberField(modeJson, "ch2o_off", &v)) next.ch2o_off = v;
-    // CO2：兼容旧字段 co2_on/co2_off，同时可单独配置夜间 co2_night_on/co2_night_off
-    if (ParseNumberField(modeJson, "co2_on", &v)) next.co2_on = v;
-    if (ParseNumberField(modeJson, "co2_off", &v)) next.co2_off = v;
-    if (ParseNumberField(modeJson, "co2_night_on", &v)) next.co2_night_on = v;
-    if (ParseNumberField(modeJson, "co2_night_off", &v)) next.co2_night_off = v;
-    // 可选：养分/酸碱报警阈值
-    if (ParseNumberField(modeJson, "ph_min", &v)) next.ph_min = v;
-    if (ParseNumberField(modeJson, "ph_max", &v)) next.ph_max = v;
-    if (ParseNumberField(modeJson, "ec_min", &v)) next.ec_min = v;
-    if (ParseNumberField(modeJson, "ec_max", &v)) next.ec_max = v;
-    if (ParseNumberField(modeJson, "n_min", &v)) next.n_min = v;
-    if (ParseNumberField(modeJson, "n_max", &v)) next.n_max = v;
-    if (ParseNumberField(modeJson, "p_min", &v)) next.p_min = v;
-    if (ParseNumberField(modeJson, "p_max", &v)) next.p_max = v;
-    if (ParseNumberField(modeJson, "k_min", &v)) next.k_min = v;
-    if (ParseNumberField(modeJson, "k_max", &v)) next.k_max = v;
-    if (ParseNumberField(modeJson, "fan_speed", &v)) next.fan_speed = static_cast<int>(v);
 
-    ClampThresholds(next);
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        g_thresholds = next;
+    // 先解析阈值和开关（mode）
+    if (modeObj != nullptr) {
+        bool enabled;
+        if (GetBoolField(modeObj, "enabled", &enabled)) {
+            g_enabled.store(enabled);
+        }
+
+        AutoControlThresholds next;
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            next = g_thresholds;
+        }
+
+        if (GetNumberField(modeObj, "soil_on", &v)) next.soil_on = static_cast<int>(v);
+        if (GetNumberField(modeObj, "soil_off", &v)) next.soil_off = static_cast<int>(v);
+        if (GetNumberField(modeObj, "light_on", &v)) next.light_on = static_cast<int>(v);
+        if (GetNumberField(modeObj, "light_off", &v)) next.light_off = static_cast<int>(v);
+        if (GetNumberField(modeObj, "temp_on", &v)) next.temp_on = v;
+        if (GetNumberField(modeObj, "temp_off", &v)) next.temp_off = v;
+        if (GetNumberField(modeObj, "ch2o_on", &v)) next.ch2o_on = v;
+        if (GetNumberField(modeObj, "ch2o_off", &v)) next.ch2o_off = v;
+        // CO2：白天阈值 co2_on/co2_off，可单独配置夜间 co2_night_on/co2_night_off
+        if (GetNumberField(modeObj, "co2_on", &v)) next.co2_on = v;
+        if (GetNumberField(modeObj, "co2_off", &v)) next.co2_off = v;
+        if (GetNumberField(modeObj, "co2_night_on", &v)) next.co2_night_on = v;
+        if (GetNumberField(modeObj, "co2_night_off", &v)) next.co2_night_off = v;
+        // 可选：养分/酸碱报警阈值
+        if (GetNumberField(modeObj, "ph_min", &v)) next.ph_min = v;
+        if (GetNumberField(modeObj, "ph_max", &v)) next.ph_max = v;
+        if (GetNumberField(modeObj, "ec_min", &v)) next.ec_min = v;
+        if (GetNumberField(modeObj, "ec_max", &v)) next.ec_max = v;
+        if (GetNumberField(modeObj, "n_min", &v)) next.n_min = v;
+        if (GetNumberField(modeObj, "n_max", &v)) next.n_max = v;
+        if (GetNumberField(modeObj, "p_min", &v)) next.p_min = v;
+        if (GetNumberField(modeObj, "p_max", &v)) next.p_max = v;
+        if (GetNumberField(modeObj, "k_min", &v)) next.k_min = v;
+        if (GetNumberField(modeObj, "k_max", &v)) next.k_max = v;
+        if (GetNumberField(modeObj, "fan_speed", &v)) next.fan_speed = static_cast<int>(v);
+
+        ClampThresholds(next);
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_thresholds = next;
+        }
     }
 
-    // 再解析单次控制（control）。若没有 control，则兼容老格式：直接在同一个 JSON 里找字段。
-    std::string controlObj;
-    const std::string *ctrlJsonPtr = &jsonRaw;
-    if (ExtractObjectForKey(jsonRaw, "control", &controlObj)) {
-        ctrlJsonPtr = &controlObj;
-    } else if (&modeJson != &jsonRaw) {
-        // 若存在 mode 包装但没有 control，单次控制字段不会重复出现在 mode 中，这里直接返回即可。
-        ctrlJsonPtr = &modeJson;
+    // 再解析单次控制（control）
+    cJSON *json = controlObj;
+    if (json == nullptr) {
+        cJSON_Delete(root);
+        return;
     }
-    const std::string &json = *ctrlJsonPtr;
 
-    // 额外支持一种简洁的“直接控制执行器”格式：根据 pump/led/fan/buzzer/capture 字段立刻动作一次
+    // 直接控制执行器：根据 pump/led/fan/buzzer/sg90_angle/capture 字段立刻动作一次
     // 例如：{"control":{"pump":1}} / {"control":{"led":0}} / {"control":{"fan":60}} / {"control":{"buzzer":1}}
-    // 也兼容旧格式：{"pump":1} / {"led":0} / {"fan":60} / {"buzzer":1} / {"capture":1}
 
     // pump: 0/1 -> 关/开
-    if (ParseNumberField(json, "pump", &v)) {
+    if (GetNumberField(json, "pump", &v)) {
         bool on = (v != 0.0);
         g_pumpOn = on;
         if (on) {
@@ -238,7 +223,7 @@ void ApplyCommandJson(const std::string &jsonRaw)
     }
 
     // led: 0/1 -> 关/开
-    if (ParseNumberField(json, "led", &v)) {
+    if (GetNumberField(json, "led", &v)) {
         bool on = (v != 0.0);
         g_ledOn = on;
         if (on) {
@@ -249,7 +234,7 @@ void ApplyCommandJson(const std::string &jsonRaw)
     }
 
     // fan: 0-100 -> 0 代表停；>0 代表以对应速度正转
-    if (ParseNumberField(json, "fan", &v)) {
+    if (GetNumberField(json, "fan", &v)) {
         int sp = static_cast<int>(v);
         if (sp < 0) sp = 0;
         if (sp > 100) sp = 100;
@@ -269,14 +254,14 @@ void ApplyCommandJson(const std::string &jsonRaw)
     }
 
     // buzzer: 0/1 -> 关/开
-    if (ParseNumberField(json, "buzzer", &v)) {
+    if (GetNumberField(json, "buzzer", &v)) {
         bool on = (v != 0.0);
         g_buzzerOn = on;
         (void)BuzzerControl(on ? 1 : 0);
     }
 
     // sg90_angle: 0-180 -> 设置舵机角度
-    if (ParseNumberField(json, "sg90_angle", &v)) {
+    if (GetNumberField(json, "sg90_angle", &v)) {
         int angle = static_cast<int>(v);
         if (angle < SG90_MIN_ANGLE) angle = SG90_MIN_ANGLE;
         if (angle > SG90_MAX_ANGLE) angle = SG90_MAX_ANGLE;
@@ -284,12 +269,13 @@ void ApplyCommandJson(const std::string &jsonRaw)
     }
 
     // capture: 非 0 触发一次拍照指令
-    if (ParseNumberField(json, "capture", &v)) {
+    if (GetNumberField(json, "capture", &v)) {
         if (v != 0.0) {
-            const char *cmd = "CAPTURE";
-            write_uart(cmd, std::strlen(cmd));
+            (void)sensor::SendCaptureCommand("CAPTURE");
         }
     }
+
+    cJSON_Delete(root);
 }
 
 void OnMqttMessage(void * /*ctx*/, const char *topic, const void *data, size_t size)
@@ -367,9 +353,9 @@ void ControlLoop()
             const bool isDay = IsDaytime();
 
             // 传感器读数
-            const double soil = static_cast<double>(get_data_by_key(const_cast<char *>("SoilHumi")));
-            const double temp = static_cast<double>(get_data_by_key(const_cast<char *>("Temp")));
-            const double co2 = static_cast<double>(get_data_by_key(const_cast<char *>("CO_2")));
+            const double soil = static_cast<double>(sensor::GetDataByKey("SoilHumi"));
+            const double temp = static_cast<double>(sensor::GetDataByKey("Temp"));
+            const double co2 = static_cast<double>(sensor::GetDataByKey("CO_2"));
 
             int lightValue = 0;
             bool haveLight = (light_sensor_read(&lightValue) == 0);

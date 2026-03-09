@@ -35,7 +35,6 @@
 
 #include "auto_control.h"
 #include "mqtt_payload_builder.h"
-#include "device_identity.h"
 
 static napi_value initAllModules(napi_env env, napi_callback_info info)
 {
@@ -69,9 +68,6 @@ static napi_value initAllModules(napi_env env, napi_callback_info info)
     // 串口用于相机/控制命令，传感器数据改为 WiFi UDP 通道
     init_uart();
     init_wifi_udp_receiver();
-    
-        // 提前初始化 deviceId（芯片/板级唯一 ID），用于 MQTT payload/topic 与自动控制命令 topic。
-        mqttc::SetMqttPayloadDeviceId(device_identity::GetBestEffortChipId());
 
     // 自动控制线程：默认阈值不生效（由全局开关决定），线程常驻用于接收阈值/命令
     control::Start();
@@ -98,7 +94,8 @@ static napi_value register_myproject_apis(napi_env env, napi_value exports)
     RegisterLedApis(env, exports);
     RegisterFanApis(env, exports);
     RegisterBuzzerApis(env, exports);
-    RegisterSerialApis(env, exports);
+    // RegisterSerialApis(env, exports);
+    RegisterUdpApis(env, exports);
     RegisterLlamaApis(env, exports);
     RegisterMqttApis(env, exports);
     RegisterControlApis(env, exports);

@@ -240,3 +240,32 @@ int wifi_get_latest_data(char *outBuf, size_t bufLen)
 
     return 0;
 }
+
+int wifi_send_broadcast(const char *buf, int len)
+{
+    if (buf == nullptr || len <= 0) {
+        return -1;
+    }
+
+    // 通过 UDP 广播端口 9001 发送命令
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("udp send socket create fail");
+        return -1;
+    }
+
+    int yes = 1;
+    (void)setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(9001);               // 发送端口 9001
+    addr.sin_addr.s_addr = inet_addr("255.255.255.255"); // 广播地址
+
+    ssize_t sent = sendto(sock, buf, static_cast<size_t>(len), 0,
+                          reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr));
+    close(sock);
+
+    return (sent == len) ? 0 : -1;
+}

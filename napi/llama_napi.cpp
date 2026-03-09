@@ -108,6 +108,8 @@ struct AskLlamaContext {
     std::string prompt;
     std::string response;
     bool success;
+    bool includeEnvContext;
+    std::string plantName;
 };
 
 static void AskLlamaExecute(napi_env env, void* data)
@@ -133,7 +135,8 @@ static void AskLlamaExecute(napi_env env, void* data)
 
     llama::LlamaRequestParams params;
     params.prompt = context->prompt;
-    params.stream = false;
+    params.includeEnvContext = context->includeEnvContext;
+    params.plantName = context->plantName;
 
     llama::LlamaResponse response = g_llamaClient->sendRequestSync(params);
 
@@ -171,21 +174,45 @@ static void AskLlamaComplete(napi_env env, napi_status status, void* data)
 
 static napi_value askLlama(napi_env env, napi_callback_info info)
 {
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 3;
+    napi_value args[3];
     napi_value promise;
     char prompt[4096] = {0};
     size_t prompt_len = 0;
 
     NAPI_CALL(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
 
+    bool includeEnvContext = true;
+    char plantName[256] = {0};
+    size_t plantName_len = 0;
+
     if (argc >= 1) {
         NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], prompt, sizeof(prompt) - 1, &prompt_len));
+    }
+
+    if (argc >= 2) {
+        napi_valuetype valuetype;
+        NAPI_CALL(env, napi_typeof(env, args[1], &valuetype));
+        if (valuetype == napi_boolean) {
+            bool v = true;
+            NAPI_CALL(env, napi_get_value_bool(env, args[1], &v));
+            includeEnvContext = v;
+        }
+    }
+
+    if (argc >= 3) {
+        napi_valuetype valuetype;
+        NAPI_CALL(env, napi_typeof(env, args[2], &valuetype));
+        if (valuetype == napi_string) {
+            NAPI_CALL(env, napi_get_value_string_utf8(env, args[2], plantName, sizeof(plantName) - 1, &plantName_len));
+        }
     }
 
     AskLlamaContext* context = new AskLlamaContext();
     context->prompt = prompt;
     context->success = false;
+    context->includeEnvContext = includeEnvContext;
+    context->plantName = plantName;
 
     NAPI_CALL(env, napi_create_promise(env, &context->deferred, &promise));
 

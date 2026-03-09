@@ -44,11 +44,10 @@
 
 ## 目录
 - [自动控制（设备侧闭环）](#自动控制设备侧闭环)
-- [土壤湿度传感器](#土壤湿度传感器)
+- [传感器数据获取](#传感器数据获取)
 - [SG90舵机控制](#sg90舵机控制)
 - [水泵控制](#水泵控制)
 - [串口通信](#串口通信)
-- [光敏传感器](#光敏传感器)
 - [LED控制](#led控制)
 - [风扇控制](#风扇控制)
 - [蜂鸣器控制](#蜂鸣器控制)
@@ -58,19 +57,11 @@
 
 自动控制逻辑运行在设备侧 C/C++ 常驻线程中：线程启动后会周期性读取传感器值，并根据迟滞阈值控制执行器（泵/LED/风扇/蜂鸣器）。
 
-### 特点
-
-- **全局开关**：关闭时阈值不生效（线程仍运行，用于接收阈值/命令）。
-- **周期宏定义**：控制周期由宏 `AUTO_CONTROL_PERIOD_MS`（单位 ms）控制，可在编译时覆盖。
-- **阈值来源**：
-    - ETS 侧通过 NAPI 设置（本地 UI 配置）。
-    - Qt/PC 侧通过 MQTT 发布 JSON 命令下发（远程配置）。
-
 ### ETS/NAPI 接口（@ohos.myproject）
 
 - `setAutoControlEnabled(enabled: boolean): number`
 - `getAutoControlEnabled(): boolean`
-- `setAutoControlThresholds(cfg: { soil_on?; soil_off?; light_on?; light_off?; temp_on?; temp_off?; ch2o_on?; ch2o_off?; fan_speed? }): number`
+- `setAutoControlThresholds(cfg: { soil_on?; soil_off?; light_on?; light_off?; temp_on?; temp_off?; ch2o_on?; ch2o_off?; co2_on?; co2_off?; co2_night_on?; co2_night_off?; ph_min?; ph_max?; ec_min?; ec_max?; n_min?; n_max?; p_min?; p_max?; k_min?; k_max?; fan_speed? }): number`
 - `getAutoControlThresholds(): object`
 - `setAutoControlCommandTopic(topic: string): number`（可选，覆盖默认命令 topic）
 
@@ -106,7 +97,7 @@ ciallo_ohos/<deviceId>/control
 ciallo_ohos/control
 ```
 
-推荐 Payload 使用一层包装字段 `mode`（字段可选；enabled 支持 `true/false/0/1`）：
+推荐 Payload 使用 `mode`（阈值/开关）或 `control`（单次动作）其中一种格式：
 
 ```json
 {
@@ -120,36 +111,41 @@ ciallo_ohos/control
         "temp_off": 27.0,
         "ch2o_on": 0.20,
         "ch2o_off": 0.15,
+        "co2_on": 1200,
+        "co2_off": 800,
+        "co2_night_on": 1200,
+        "co2_night_off": 800,
+        "ph_min": 5.5,
+        "ph_max": 8.5,
+        "ec_min": 0,
+        "ec_max": 5000,
+        "n_min": 0,
+        "n_max": 3000,
+        "p_min": 0,
+        "p_max": 3000,
+        "k_min": 0,
+        "k_max": 3000,
         "fan_speed": 80
     }
 }
 ```
 
-设备侧同时兼容旧格式（字段直接在最外层）的 JSON，但新开发推荐使用 `mode` 包装。
+说明：
+- `mode` 用于配置自动控制阈值与 `enabled` 开关。
+- `control` 用于触发一次性执行器动作，不依赖 `enabled`。
+- 仅支持两种格式：`mode` 或 `control`（互斥，不支持同一条消息同时包含二者）。
 
 #### 直接控制执行器的简洁格式
 
-除了上面的“阈值+开关”格式，还支持一类更简单的“直接控制某个执行器”的 JSON。推荐也放在 `mode` 中，例如：
+除了上面的完整格式，还支持只下发 `control` 的简洁命令，例如：
 
 ```json
-{"mode": {"pump": 1}}
-{"mode": {"led": 0}}
-{"mode": {"fan": 60}}
-{"mode": {"buzzer": 1}}
-```
-
-这些字段可以和阈值字段一起出现在同一条 JSON 中，譬如：
-
-```json
-{
-    "mode": {
-        "enabled": true,
-        "soil_on": 1200,
-        "fan_speed": 70,
-        "fan": 70,
-        "pump": 0
-    }
-}
+{"control": {"pump": 1}}
+{"control": {"led": 0}}
+{"control": {"fan": 60}}
+{"control": {"buzzer": 1}}
+{"control": {"sg90_angle": 90}}
+{"control": {"capture": 1}}
 ```
 
 说明：
@@ -158,64 +154,64 @@ ciallo_ohos/control
 
 注意：设备侧只有在 MQTT 已连接时才会订阅并处理命令（本工程由 ETS 调用 `connectMqtt()` 建立连接）。
 
-## 土壤湿度传感器
+## 传感器数据获取
 
-**头文件**: `drivers/inc/soil_moisture.h`
+所有传感器数据统一通过 ETS/NAPI 接口 `getDataByKey(key: string)` 获取，无需单独初始化。数据由 ESP32-S3 采集，经 WiFi UDP 广播到主板。
 
 ### ETS/NAPI 接口（@ohos.myproject）
-
-土壤湿度数据**已改为通过统一的数据获取接口**：
 
 ```typescript
 function getDataByKey(key: string): number;
 ```
 
-**示例**：获取土壤湿度百分比
+获取指定键名对应的传感器数据。失败或数据无效时返回 -1。
+
+### 支持的参数表
+
+| 参数键 | 数据含义 | 数据范围 | 数据类型 | 备注 |
+|--------|---------|---------|---------|------|
+| `Humi` | 相对湿度（%RH） | 0-100 | float | DHT 传感器 |
+| `Temp` | 环境温度（℃） | -40~80 | float | DHT 传感器 |
+| `CH2O` | 甲醛浓度（μg/m³） | 0-10000 | float | JW01 模块 |
+| `TVOC` | 总挥发性有机物（ppb） | 0-65000 | float | JW01 模块 |
+| `CO_2` | 二氧化碳浓度（ppm） | 400-5000 | float | JW01 模块 |
+| `SoilHumi` | 土壤湿度（%） | 0-100 | float | 土壤多参数传感器 |
+| `SoilTemp` | 土壤温度（℃） | -40~80 | float | 土壤多参数传感器 |
+| `EC` | 电导率（μS/cm） | 0-20000 | int | 土壤多参数传感器 |
+| `pH` | 酸碱度 | 0-14 | float | 土壤多参数传感器 |
+| `N` | 氮含量（mg/kg） | 0-9999 | int | 土壤多参数传感器 |
+| `P` | 磷含量（mg/kg） | 0-9999 | int | 土壤多参数传感器 |
+| `K` | 钾含量（mg/kg） | 0-9999 | int | 土壤多参数传感器 |
+| `Salt` | 盐度（mg/kg） | 0-20000 | int | 土壤多参数传感器 |
+| `TDS` | 总溶解固体（mg/L） | 0-20000 | int | 土壤多参数传感器 |
+| `Light` | 光照强度（%） | 0-100 | float | 光敏转换 |
+
+### 使用示例
+
 ```typescript
-const soilHumidity = myproject.getDataByKey("SoilHumi");
+// 获取土壤湿度
+const soilHumi = myproject.getDataByKey("SoilHumi");
+if (soilHumi >= 0) {
+    console.log(`土壤湿度: ${soilHumi}%`);
+}
+
+// 获取环境温度
+const temp = myproject.getDataByKey("Temp");
+if (temp >= 0) {
+    console.log(`环境温度: ${temp}℃`);
+}
+
+// 获取光照强度
+const light = myproject.getDataByKey("Light");
+if (light >= 0) {
+    console.log(`光照强度: ${light}%`);
+}
 ```
 
 说明：
-- 土壤湿度传感器外设已更换，现通过 ESP32-S3 采集并经 WiFi UDP 广播到主板。
-- 底层 C/C++ 驱动函数（如 `soil_moisture_read_raw`）仍保留供设备侧自动控制等内部逻辑使用，但 ETS 侧统一通过 `getDataByKey()` 获取。
-
-### 宏定义
-
-土壤湿度状态定义:
-- `SOIL_DRY`: 0 - 土壤干燥
-- `SOIL_MODERATE`: 1 - 土壤湿度适中
-- `SOIL_WET`: 2 - 土壤湿润
-
-土壤湿度阈值定义:
-- `DRY_THRESHOLD`: 1000 - 干燥阈值
-- `WET_THRESHOLD`: 2500 - 湿润阈值
-
-错误码定义:
-- `SOIL_MOISTURE_OK`: 0 - 操作成功
-- `SOIL_MOISTURE_ERROR`: -1 - 一般错误
-- `SOIL_MOISTURE_ADC_ERR`: -2 - ADC读取错误
-
-### C/C++ 驱动函数（内部使用）
-
-```c
-int soil_moisture_init(void);
-```
-初始化土壤湿度传感器。成功返回`SOIL_MOISTURE_OK`，其他值表示失败。
-
-```c
-int soil_moisture_read_raw(int *value);
-```
-读取土壤湿度原始ADC值。成功返回`SOIL_MOISTURE_OK`，其他值表示失败。
-
-```c
-int soil_moisture_read_percentage(int *percentage);
-```
-获取土壤湿度百分比(0-100)。成功返回`SOIL_MOISTURE_OK`，其他值表示失败。
-
-```c
-int soil_moisture_read_status(int *status);
-```
-获取土壤湿度状态(`SOIL_DRY`/`SOIL_MODERATE`/`SOIL_WET`)。成功返回`SOIL_MOISTURE_OK`，其他值表示失败。
+- ESP32-S3 每秒采集一次所有传感器数据，通过 UDP 广播发送（格式见 `esp32_s3/src/main.cpp`）。
+- 主板通过 WiFi UDP 接收数据并缓存，ETS 侧通过 `getDataByKey()` 读取缓存值。
+- 若某个数据长时间未更新（与之前的采集周期超出阈值），该键返回 -1 表示数据无效。
 
 ## SG90舵机控制
 
@@ -303,55 +299,13 @@ void init_uart();
 ```c
 void write_uart(const char* buf, int len);
 ```
-通过UART发送数据。目前只有发送“CAPTURE”控制副板拍照的功能
+通过UART发送数据。
 
 ```c
 unsigned char* return_recv(int* len);
 ```
 返回接收到的数据。`len`为接收数据长度指针，返回值为接收数据缓冲区。
 **注意**: 调用者负责释放返回的内存。
-
-```c
-float get_data_by_key(char *key);
-```
-解析数据并获取指定键的值。
-
-## 光敏传感器
-
-**头文件**: `drivers/inc/light_sensor.h`
-
-### ETS/NAPI 接口（@ohos.myproject）
-
-光照强度数据**已改为通过统一的数据获取接口**：
-
-```typescript
-function getDataByKey(key: string): number;
-```
-
-**示例**：获取光照强度（对应键名需根据实际串口/UDP 数据确定，如 `"Light"` 或 `"Lux"`）
-```typescript
-const lightIntensity = myproject.getDataByKey("Light");
-```
-
-说明：
-- 底层 C/C++ 驱动函数（如 `light_sensor_read`）仍保留供设备侧自动控制等内部逻辑使用，但 ETS 侧统一通过 `getDataByKey()` 获取。
-
-### C/C++ 驱动函数（内部使用）
-
-```c
-int light_sensor_init(void);
-```
-初始化光敏电阻ADC。成功返回0，失败返回-1。
-
-```c
-int light_sensor_read(int *value);
-```
-读取光敏电阻的值。成功返回0，失败返回-1。
-
-```c
-float light_sensor_to_percentage(int adc_value);
-```
-将ADC数值转换为光照强度百分比(0-100)。
 
 ## LED控制
 

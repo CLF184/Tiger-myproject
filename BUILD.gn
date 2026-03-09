@@ -28,9 +28,11 @@ ohos_shared_library("myproject_napi") {
     "napi/llama_napi.cpp",
     "napi/mqtt_napi.cpp",
     "napi/pump_napi.cpp",
+    "napi/image_capture_callback_manager.cpp",
     "napi/serial_napi.cpp",
     "napi/sg90_napi.cpp",
     "napi/soil_moisture_napi.cpp",
+    "napi/udp_napi.cpp",
     "hal/src/serial_uart.c",
     "hal/src/um_adc.c",
     "hal/src/um_gpio.c",
@@ -48,10 +50,10 @@ ohos_shared_library("myproject_napi") {
     "app/src/myserial.cpp",
     "app/src/wifi_udp_receiver.cpp",
     "app/src/llama_client.cpp",
-    "app/src/device_identity.cpp",
     "app/src/mqttc_client.cpp",
     "app/src/mqtt_global.cpp",
     "app/src/mqtt_payload_builder.cpp",
+    "app/src/sensor_data_provider.cpp",
     "control/src/auto_control.cpp",
   ]
 

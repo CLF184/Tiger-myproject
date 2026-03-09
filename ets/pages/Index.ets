@@ -78,6 +78,8 @@ struct Index {
   @State llamaPrompt: string = '';
   @State llamaResponse: string = '';
   @State llamaLoading: boolean = false;
+  @State llamaIncludeEnvContext: boolean = true;
+  @State llamaPlantName: string = '番茄';
 
   // 添加聊天历史相关变量
   @State chatHistory: ChatMessage[] = []
@@ -442,7 +444,8 @@ struct Index {
     const currentPrompt = this.llamaPrompt;
     this.llamaPrompt = '';
 
-    myproject.askLlama(currentPrompt)
+    const plantName = this.llamaIncludeEnvContext ? this.llamaPlantName : '';
+    myproject.askLlama(currentPrompt, this.llamaIncludeEnvContext, plantName)
       .then((response: string | null) => {
         if (response !== null) {
           // 添加AI回复到历史记录
@@ -1179,6 +1182,25 @@ struct Index {
               .onChange((value) => {
                 this.llamaMax_Tokens = value;
               })
+          }.width('100%').justifyContent(FlexAlign.SpaceBetween).margin({ bottom: 8 })
+
+          Row() {
+            Text('提供环境信息:').fontSize(16)
+            Toggle({ type: ToggleType.Switch, isOn: this.llamaIncludeEnvContext })
+              .onChange((isOn) => {
+                this.llamaIncludeEnvContext = isOn;
+              })
+              .enabled(!this.llamaLoading)
+          }.width('100%').justifyContent(FlexAlign.SpaceBetween).margin({ bottom: 8 })
+
+          Row() {
+            Text('植物名字:').fontSize(16)
+            TextInput({ text: this.llamaPlantName, placeholder: '例如：番茄/薄荷/草莓' })
+              .width('70%')
+              .onChange((value) => {
+                this.llamaPlantName = value;
+              })
+              .enabled(!this.llamaLoading && this.llamaIncludeEnvContext)
           }.width('100%').justifyContent(FlexAlign.SpaceBetween).margin({ bottom: 8 })
 
           Button('连接服务器')

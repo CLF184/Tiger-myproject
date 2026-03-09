@@ -114,9 +114,11 @@ declare namespace myproject {
     /**
      * 向LLaMA服务器发送请求并获取回复
      * @param prompt 提示文本
+        * @param includeEnvContext 是否注入当前环境/传感器信息作为上下文（system 消息）。默认 true。
+        * @param plantName 当前种植的植物名字（仅在 includeEnvContext=true 时注入）
      * @returns Promise，解析为生成的回复文本或null（如果请求失败）
      */
-    function askLlama(prompt: string): Promise<string | null>;
+        function askLlama(prompt: string, includeEnvContext?: boolean, plantName?: string): Promise<string | null>;
 
     /**
      * 配置LLaMA服务器连接参数

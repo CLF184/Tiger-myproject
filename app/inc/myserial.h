@@ -54,12 +54,4 @@ void write_uart(const char* buf, int len);
 unsigned char* return_recv(int* len);
 
 
-/**
- * @brief 解析数据并获取指定键的值
- * 
- * @param key 键名
- * @return 键对应的值
- */
-float get_data_by_key(char *key);
-
 #endif // MYSERIAL_H

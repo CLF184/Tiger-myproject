@@ -572,7 +572,8 @@ bool MqttCClient::publishDiscoveryAnnounceRetained(const std::string &topicPrefi
         return false;
     }
 
-    const std::string discoveryTopic = topicPrefix + "/announce/" + deviceId;
+    // const std::string discoveryTopic = topicPrefix + "/announce/" + deviceId;
+    const std::string discoveryTopic = topicPrefix + "/announce";
     const std::string ts = IsoTimestampUtc();
 
     cJSON *root = cJSON_CreateObject();

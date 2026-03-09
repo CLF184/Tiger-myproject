@@ -15,15 +15,13 @@
 #include <iostream>
 #include <string>
 #include <algorithm>
+#include <cstring>
 #include <iterator>
 #include <map>
 #include <vector>
 #include <fstream>
-#include <cstring>
-#include <string.h>
 #include "serial_uart.h"
 #include "myserial.h"
-#include "wifi_udp_receiver.h"
 
 extern "C" {
 #include <semaphore.h>
@@ -34,9 +32,6 @@ extern "C" {
 #include <unistd.h>
 #include <poll.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 }
 using namespace std;
 
@@ -60,6 +55,11 @@ static bool g_uartInited = false;
 
 //int recv[MAX_BUFFER_SIZE];
 pthread_mutex_t recv_mutex = PTHREAD_MUTEX_INITIALIZER;  // 初始化互斥锁
+
+typedef struct {
+    char* buf;  // 数据缓冲区
+    int len;                   // 数据长度
+} SerialOutputParams;
 
 void WriteFrameToFile(const vector<uint8_t>& frameData, const char* fileName)
 {
@@ -133,79 +133,52 @@ void *_serial_input_task(void* arg)// 串口读线程
     return NULL;
 }
 
-float get_data_by_key(char *key)
-{
-    if (key == nullptr) {
-        return 0.0f;
-    }
-
-    char dataStr[MAX_BUFFER_SIZE] = {0};
-    if (wifi_get_latest_data(dataStr, sizeof(dataStr)) != 0) {
-        return 0.0f; // 当前还没有收到任何 UDP 数据
-    }
-
-    float value = 0.0f;
-    char searchKey[32] = {0};
-    sprintf(searchKey, "%s:", key);  // key: 形式
-
-    char* position = strstr(dataStr, searchKey);
-    if (position != NULL) {
-        sscanf(position, "%*[^:]:%f", &value);
-    }
-
-    return value;
-}
-
 unsigned char* return_recv(int *len)
 {
-    if (len == nullptr) {
-        return nullptr;
-    }
+    *len = frame_len;
+    unsigned char *temp; // 临时缓冲区
+    
+    temp = new unsigned char[data_buffer.size()]; // 动态分配内存
 
-    char dataStr[MAX_BUFFER_SIZE] = {0};
-    if (wifi_get_latest_data(dataStr, sizeof(dataStr)) != 0) {
-        *len = 0;
-        return nullptr;
-    }
+    pthread_mutex_lock(&recv_mutex);  // 加锁
+    std::memcpy(temp, &data_buffer[0], data_buffer.size() * sizeof(data_buffer[0]));
+    pthread_mutex_unlock(&recv_mutex);  // 解锁
 
-    int dataLen = static_cast<int>(strlen(dataStr));
-    if (dataLen <= 0) {
-        *len = 0;
-        return nullptr;
-    }
-
-    *len = dataLen;
-    unsigned char *temp = new unsigned char[dataLen];
-    memcpy(temp, dataStr, static_cast<size_t>(dataLen));
     return temp;
 }
 
+// 串口写线程
+void *_serial_output_task(void *arg)
+{
+    SerialOutputParams *params = (SerialOutputParams *)arg;  // 将参数转换为结构体指针
+    const char* buf = params->buf;                 // 获取 buf
+    int len = params->len;                                 // 获取 len
+
+    write(fd, buf, len);
+
+    delete[] params->buf;  // 释放动态分配的内存
+    delete params;  // 释放动态分配的内存
+    return NULL;
+}
+
+
 void write_uart(const char* buf, int len)
 {
-    if (buf == nullptr || len <= 0) {
+    pthread_t pid_write;
+
+    // 动态分配结构体并填充参数
+    SerialOutputParams *params = new SerialOutputParams;
+    if (params == NULL) {
+        perror("malloc failed");
         return;
     }
+    
+    params->buf = new char[len];
+    std::memcpy(params->buf, buf, len);
+    params->len = len;
 
-    // 通过 UDP 广播端口 9001 发送简单命令，例如 "CAPTURE"
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        perror("udp socket create fail");
-        return;
-    }
-
-    int yes = 1;
-    (void)setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(9001);               // 发送端口 9001
-    addr.sin_addr.s_addr = inet_addr("255.255.255.255"); // 广播地址
-
-    (void)sendto(sock, buf, static_cast<size_t>(len), 0,
-                 reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
-
-    close(sock);
+    // 创建线程并传递参数
+    pthread_create(&pid_write, NULL, _serial_output_task, (void *)params);
 }
 
 void init_uart(){

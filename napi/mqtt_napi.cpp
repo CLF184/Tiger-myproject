@@ -1,5 +1,6 @@
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <cctype>
 #include <ctime>
 #include <cstdio>
@@ -10,7 +11,6 @@
 #include "napi/native_common.h"
 #include "napi/native_node_api.h"
 
-#include "device_identity.h"
 #include "mqttc_client.h"
 #include "mqtt_global.h"
 
@@ -24,27 +24,34 @@ namespace {
 std::mutex g_discoveryMu;
 std::string g_lastAnnouncedPrefix;
 
-static bool LooksLikeDefaultRandomClientId(const std::string &clientId)
+static std::string SanitizeTopicSegment(const std::string &in)
 {
-    // ETS 默认：device_<random>
-    const std::string prefix = "device_";
-    if (clientId.size() <= prefix.size()) return false;
-    if (clientId.rfind(prefix, 0) != 0) return false;
-    for (size_t i = prefix.size(); i < clientId.size(); ++i) {
-        if (!std::isdigit(static_cast<unsigned char>(clientId[i]))) return false;
+    std::string out;
+    out.reserve(in.size());
+    for (unsigned char c : in) {
+        if (std::isalnum(c) || c == '_' || c == '-' || c == '.') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('_');
+        }
     }
-    return true;
+
+    out.erase(std::unique(out.begin(), out.end(), [](char a, char b) { return a == '_' && b == '_'; }), out.end());
+    while (!out.empty() && out.front() == '_') out.erase(out.begin());
+    while (!out.empty() && out.back() == '_') out.pop_back();
+    if (out.empty()) out = "unknown";
+    return out;
 }
 
 static std::string EnsureDeviceId()
 {
     std::string id = mqttc::GetMqttPayloadDeviceId();
-    if (!id.empty() && id != "unknown") {
-        return device_identity::SanitizeTopicSegment(id);
+    id = SanitizeTopicSegment(id);
+    if (id.empty()) {
+        id = "unknown";
+        mqttc::SetMqttPayloadDeviceId(id);
     }
-    id = device_identity::GetBestEffortChipId();
-    mqttc::SetMqttPayloadDeviceId(id);
-    return device_identity::SanitizeTopicSegment(id);
+    return id;
 }
 
 static std::string NormalizePrefixInput(const std::string &input)
@@ -53,7 +60,7 @@ static std::string NormalizePrefixInput(const std::string &input)
     if (input.empty()) return std::string();
     const size_t slash = input.find('/');
     std::string prefix = (slash == std::string::npos) ? input : input.substr(0, slash);
-    prefix = device_identity::SanitizeTopicSegment(prefix);
+    prefix = SanitizeTopicSegment(prefix);
     if (prefix.empty() || prefix == "unknown") return std::string();
     return prefix;
 }
@@ -132,19 +139,20 @@ static napi_value configMqtt(napi_env env, napi_callback_info info)
         }
     }
 
-    const std::string chipId = device_identity::GetBestEffortChipId();
-
     // default topic prefix; may be overridden later based on publish topic input.
     mqttc::SetMqttTopicPrefix("ciallo_ohos");
 
     std::string clientIdStr(clientId, clientIdLen);
-    if (clientIdStr.empty() || LooksLikeDefaultRandomClientId(clientIdStr)) {
-        clientIdStr = chipId;
+    clientIdStr = SanitizeTopicSegment(clientIdStr);
+    if (clientIdStr.empty()) {
+        status = -3;
+        NAPI_CALL(env, napi_create_int32(env, status, &result));
+        return result;
     }
 
     g_mqttClient.configure(brokerUrl, clientIdStr, username, password);
-    // 设备侧 deviceId 统一使用芯片/板级唯一 ID，用于 payload 与 topic 拼接。
-    mqttc::SetMqttPayloadDeviceId(chipId);
+    // 设备侧 deviceId 直接使用 ETS 传入的 deviceId（即第二个参数）。
+    mqttc::SetMqttPayloadDeviceId(clientIdStr);
     NAPI_CALL(env, napi_create_int32(env, status, &result));
     return result;
 }

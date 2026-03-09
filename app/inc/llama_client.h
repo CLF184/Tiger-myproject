@@ -13,7 +13,14 @@ namespace llama
     struct LlamaRequestParams
     {
         std::string prompt;  // 用户输入的提示
-        bool stream = false; // 是否使用流式返回
+
+
+        // 是否将“当前环境/传感器信息”作为上下文注入到 messages（system 角色）中。
+        // 注入内容由 mqttc::BuildSensorPayloadJson 生成，格式与 MQTT 上报一致。
+        bool includeEnvContext = false;
+
+        // 当前种植的植物名字（由 ETS 输入）。仅在 includeEnvContext=true 时注入。
+        std::string plantName;
     };
 
     // 定义响应结构体

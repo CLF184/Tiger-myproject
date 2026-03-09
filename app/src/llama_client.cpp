@@ -10,6 +10,8 @@
 #include <sstream>
 #include "llama_client.h"
 
+#include "mqtt_payload_builder.h" // mqttc::BuildSensorPayloadJson
+
 #include "cJSON.h"
 // #include "hilog/log.h"
 
@@ -19,6 +21,24 @@
 // #define LOGE(...) ::OHOS::HiviewDFX::HiLog::Error(::OHOS::HiviewDFX::HiLogLabel{LOG_DOMAIN, 0, LOG_TAG}, __VA_ARGS__)
 
 namespace llama {
+
+static std::string BuildEnvContextSystemMessageSnippet(bool *okOut = nullptr)
+{
+    if (okOut) {
+        *okOut = false;
+    }
+
+    std::string json;
+    std::string err;
+    if (!mqttc::BuildSensorPayloadJson(false /* includeImage */, json, &err)) {
+        return std::string();
+    }
+
+    if (okOut) {
+        *okOut = true;
+    }
+    return std::string("当前设备环境信息(JSON)：\n") + json;
+}
 
 static std::string CreateJsonRequestCjson(const LlamaRequestParams& params,
                                          const std::vector<std::pair<std::string, std::string>>& messageHistory,
@@ -65,7 +85,6 @@ static std::string CreateJsonRequestCjson(const LlamaRequestParams& params,
 
     ok = ok && (cJSON_AddNumberToObject(root, "temperature", static_cast<double>(temperature)) != nullptr);
     ok = ok && (cJSON_AddNumberToObject(root, "max_tokens", max_tokens) != nullptr);
-    ok = ok && (cJSON_AddBoolToObject(root, "stream", params.stream ? 1 : 0) != nullptr);
 
     if (!ok) {
         cJSON_Delete(root);
@@ -160,8 +179,28 @@ bool LlamaClient::isConnected() const {
 }
 
 std::string LlamaClient::serializeRequest(const LlamaRequestParams& params) {
+    std::string systemMessage = m_systemMessage;
+
+    if (params.includeEnvContext) {
+        if (!params.plantName.empty()) {
+            if (!systemMessage.empty()) {
+                systemMessage.append("\n\n");
+            }
+            systemMessage.append(std::string("当前种植植物：") + params.plantName);
+        }
+
+        bool ok = false;
+        std::string envSnippet = BuildEnvContextSystemMessageSnippet(&ok);
+        if (ok && !envSnippet.empty()) {
+            if (!systemMessage.empty()) {
+                systemMessage.append("\n\n");
+            }
+            systemMessage.append(envSnippet);
+        }
+    }
+
     // 使用内部存储的消息历史、温度和最大令牌数创建请求
-    return createJsonRequest(params, m_messageHistory, m_systemMessage, m_temperature, m_maxTokens);
+    return createJsonRequest(params, m_messageHistory, systemMessage, m_temperature, m_maxTokens);
 }
 
 LlamaResponse LlamaClient::parseResponse(const std::string& json) {
@@ -230,21 +269,6 @@ LlamaResponse LlamaClient::parseResponse(const std::string& json) {
         }
     }
 
-    // 流式：choices[0].delta.content / role
-    if (response.text.empty()) {
-        cJSON *delta = cJSON_GetObjectItemCaseSensitive(choice0, "delta");
-        if (cJSON_IsObject(delta)) {
-            cJSON *content = cJSON_GetObjectItemCaseSensitive(delta, "content");
-            if (cJSON_IsString(content) && content->valuestring != nullptr) {
-                response.text = content->valuestring;
-            }
-            cJSON *role = cJSON_GetObjectItemCaseSensitive(delta, "role");
-            if (cJSON_IsString(role) && role->valuestring != nullptr) {
-                response.role = role->valuestring;
-            }
-        }
-    }
-
     cJSON_Delete(root);
     return response;
 }
@@ -301,7 +325,6 @@ bool LlamaClient::sendRequest(const LlamaRequestParams& params, ResponseCallback
     std::string responseData;
     bool headerParsed = false;
     size_t contentLength = 0;
-    std::string accumulatedResponse; // 用于流式传输的累积响应
     
     // 读取响应
     while (true) {
@@ -363,71 +386,12 @@ bool LlamaClient::sendRequest(const LlamaRequestParams& params, ResponseCallback
             }
             
             // 检查是否接收完整的响应
-            if (headerParsed && !params.stream) {
-                // 非流式模式，等待接收完整数据
+            if (headerParsed) {
+                // 等待接收完整数据
                 if (contentLength > 0 && responseData.length() >= contentLength) {
                     LlamaResponse response = parseResponse(responseData);
                     historyTrackingCallback(response);
                     return true;
-                }
-            } else if (headerParsed && params.stream) {
-                // 流式模式，解析并回调每一块数据
-                size_t pos = 0;
-                size_t nextPos = responseData.find("\n", pos);
-                
-                while (nextPos != std::string::npos) {
-                    std::string line = responseData.substr(pos, nextPos - pos);
-                    pos = nextPos + 1;
-
-                    if (!line.empty() && line.back() == '\r') {
-                        line.pop_back();
-                    }
-                    
-                    // 解析SSE数据块
-                    if (line.find("data:") == 0) {
-                        std::string jsonData = line.substr(5); // 跳过"data:"
-                        while (!jsonData.empty() && (jsonData.front() == ' ' || jsonData.front() == '\t')) {
-                            jsonData.erase(0, 1);
-                        }
-                        if (!jsonData.empty() && jsonData.back() == '\r') {
-                            jsonData.pop_back();
-                        }
-                        
-                        // 处理流结束标记
-                        if (jsonData.find("[DONE]") != std::string::npos) {
-                            LlamaResponse doneResponse;
-                            doneResponse.finished = true;
-                            if (!accumulatedResponse.empty()) {
-                                doneResponse.text = accumulatedResponse;
-                                doneResponse.role = "assistant";
-                            }
-                            historyTrackingCallback(doneResponse);
-                            return true;
-                        }
-                        
-                        LlamaResponse response = parseResponse(jsonData);
-                        
-                        // 累积文本以便在最后更新消息历史
-                        if (!response.text.empty()) {
-                            accumulatedResponse += response.text;
-                        }
-                        
-                        callback(response); // 使用原始回调，不更新历史
-                        
-                        // 如果收到完成标志，继续处理后续数据但准备结束
-                        if (response.finished) {
-                            continue;
-                        }
-                    }
-                    
-                    nextPos = responseData.find("\n", pos);
-                }
-                
-                // 保留未处理的数据
-                if (pos < responseData.length()) {
-                    responseData = responseData.substr(pos);
-                } else {
-                    responseData.clear();
                 }
             }
         }
@@ -439,10 +403,6 @@ bool LlamaClient::sendRequest(const LlamaRequestParams& params, ResponseCallback
 LlamaResponse LlamaClient::sendRequestSync(const LlamaRequestParams& params, int timeout_ms) {
     LlamaResponse finalResponse;
     bool requestComplete = false;
-    
-    // 创建一个非流式请求参数的副本
-    LlamaRequestParams syncParams = params;
-    syncParams.stream = false; // 确保同步请求使用非流式模式
     
     // 使用lambda捕获响应
     auto callback = [&finalResponse, &requestComplete](const LlamaResponse& response) {
@@ -471,7 +431,7 @@ LlamaResponse LlamaClient::sendRequestSync(const LlamaRequestParams& params, int
         return finalResponse;
     }
     
-    if (!sendRequest(syncParams, callback)) {
+    if (!sendRequest(params, callback)) {
         finalResponse.error = getLastError();
         return finalResponse;
     }

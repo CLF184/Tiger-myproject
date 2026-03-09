@@ -14,7 +14,8 @@
 
 #include "cJSON.h"
 
-#include "myserial.h" // get_data_by_key + PHOTO_PATH
+#include "myserial.h" // PHOTO_PATH
+#include "sensor_data_provider.h"
 #include "auto_control.h" // control::AutoControlThresholds / GetThresholds
 
 namespace mqttc {
@@ -149,27 +150,27 @@ bool BuildSensorPayloadJson(bool includeImage, std::string &outJson, std::string
     }
 
     // Read sensors (best-effort; keep 0 if failed)
-    float soilMoistureF = get_data_by_key(const_cast<char *>("SoilHumi"));
+    float soilMoistureF = sensor::GetDataByKey("SoilHumi");
     int soilMoisture = static_cast<int>(soilMoistureF + (soilMoistureF >= 0 ? 0.5f : -0.5f));
 
-    float lightF = get_data_by_key(const_cast<char *>("Light"));
+    float lightF = sensor::GetDataByKey("Light");
     int lightLevel = static_cast<int>(lightF + (lightF >= 0 ? 0.5f : -0.5f));
 
-    float temperature = get_data_by_key(const_cast<char *>("Temp"));
-    float humidityF = get_data_by_key(const_cast<char *>("Humi"));
-    float formaldehyde = get_data_by_key(const_cast<char *>("CH2O"));
-    float tvoc = get_data_by_key(const_cast<char *>("TVOC"));
-    float co2F = get_data_by_key(const_cast<char *>("CO_2"));
+    float temperature = sensor::GetDataByKey("Temp");
+    float humidityF = sensor::GetDataByKey("Humi");
+    float formaldehyde = sensor::GetDataByKey("CH2O");
+    float tvoc = sensor::GetDataByKey("TVOC");
+    float co2F = sensor::GetDataByKey("CO_2");
 
     // 新增土壤多参数（由 ESP 返回的扩展字段）
-    float soilTemp = get_data_by_key(const_cast<char *>("SoilTemp"));
-    float ec = get_data_by_key(const_cast<char *>("EC"));
-    float ph = get_data_by_key(const_cast<char *>("pH"));
-    float n = get_data_by_key(const_cast<char *>("N"));
-    float p = get_data_by_key(const_cast<char *>("P"));
-    float k = get_data_by_key(const_cast<char *>("K"));
-    float salt = get_data_by_key(const_cast<char *>("Salt"));
-    float tds = get_data_by_key(const_cast<char *>("TDS"));
+    float soilTemp = sensor::GetDataByKey("SoilTemp");
+    float ec = sensor::GetDataByKey("EC");
+    float ph = sensor::GetDataByKey("pH");
+    float n = sensor::GetDataByKey("N");
+    float p = sensor::GetDataByKey("P");
+    float k = sensor::GetDataByKey("K");
+    float salt = sensor::GetDataByKey("Salt");
+    float tds = sensor::GetDataByKey("TDS");
 
     // 简单告警判断：根据 EC、pH、N、P、K 是否超出配置的上下限给出 alarm 标志
     // alarm = 0 表示无告警；>0 表示存在至少一项超限（当前使用 1/0 即可，后续可扩展为位掩码）。
