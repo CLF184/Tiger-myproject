@@ -37,7 +37,7 @@ static napi_value sendCapture(napi_env env, napi_callback_info info)
 {
     (void)info;
     napi_value result;
-    int status = sensor::SendCaptureCommand(kCaptureCmd);
+    int status = sensor::SendCommand(kCaptureCmd);
     
     NAPI_CALL(env, napi_create_int32(env, status, &result));
     return result;

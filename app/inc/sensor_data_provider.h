@@ -17,7 +17,7 @@ DataChannel GetDataChannel();
 float GetDataByKey(const char *key);
 
 // Send one command using current selected backend.
-int SendCaptureCommand(const char *command);
+int SendCommand(const char *command);
 
 } // namespace sensor
 

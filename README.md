@@ -38,16 +38,21 @@
 - `napi/*.cpp`：将驱动层/业务层能力映射为 ETS 可调用接口。
 - `drivers/` + `hal/`：执行器与传感器驱动，以及底层硬件访问。
 - `control/`：设备侧自动控制线程与阈值闭环控制。
-- `app/`：MQTT 通信、LLaMA 客户端、串口与设备身份等通用业务能力。
-- `esp32_s3/`：传感器采集与 UDP 广播固件代码。
+- `app/`：业务能力层，包含：
+    - **数据通信（同一层）**：`sensor_data_provider`（统一数据通道抽象，`UDP` 与 `SERIAL` 互斥二选一）、`wifi_udp_receiver`（UDP 广播收发）、`myserial`（串口收发）
+  - **MQTT 通信**：`mqttc_client`（MQTT-C 客户端包装）、`mqtt_global`（全局实例管理）、`mqtt_payload_builder`（消息负载构建）
+  - **AI 能力**：`llama_client`（LLaMA 服务客户端）
+- `esp32_s3/`：传感器采集与 UDP 广播固件代码（PlatformIO 工程）。
 - `ets/pages/` + `qt/`：前端页面与上位机侧联调入口。
 
 ## 目录
 - [自动控制（设备侧闭环）](#自动控制设备侧闭环)
+- [MQTT 通信模块](#mqtt-通信模块)
 - [传感器数据获取](#传感器数据获取)
 - [SG90舵机控制](#sg90舵机控制)
 - [水泵控制](#水泵控制)
 - [串口通信](#串口通信)
+- [UDP通信（wifi_udp_receiver）](#udp通信wifi_udp_receiver)
 - [LED控制](#led控制)
 - [风扇控制](#风扇控制)
 - [蜂鸣器控制](#蜂鸣器控制)
@@ -154,9 +159,249 @@ ciallo_ohos/control
 
 注意：设备侧只有在 MQTT 已连接时才会订阅并处理命令（本工程由 ETS 调用 `connectMqtt()` 建立连接）。
 
+## MQTT 通信模块
+
+### MQTT-C 客户端包装（mqttc_client）
+
+**头文件**: `app/inc/mqttc_client.h`  
+**实现**: `app/src/mqttc_client.cpp`
+
+对 MQTT-C 库的 C++ 包装，提供完整的 MQTT 连接、发送、接收等能力：
+
+#### 核心类：MqttCClient
+
+```cpp
+class MqttCClient {
+public:
+    // 配置 MQTT 连接参数
+    void configure(const std::string &brokerUrl,
+                   const std::string &clientId,
+                   const std::string &username,
+                   const std::string &password);
+
+    // 连接到 MQTT Broker
+    bool connect(std::string *errorMsg = nullptr);
+    
+    // 断开连接
+    void disconnect();
+
+    // 发布消息
+    bool publish(const std::string &topic,
+                 const void *data,
+                 size_t size,
+                 int qos,
+                 bool retain,
+                 std::string *errorMsg = nullptr);
+
+    // 订阅主题
+    bool subscribe(const std::string &topic, int qos = 0, std::string *errorMsg = nullptr);
+
+    // 发布设备发现公告消息（自动生成 JSON 格式，topic 为 <prefix>/announce/<deviceId>）
+    // 使用 retain=true，方便客户端订阅后立即获取最近一次公告
+    bool publishDiscoveryAnnounceRetained(const std::string &topicPrefix,
+                                          const std::string &deviceId,
+                                          const std::string &deviceType,
+                                          std::string *errorMsg = nullptr);
+
+    // 单次同步处理：刷新 socket 读写与回调分发（建议在外部循环中周期性调用）
+    bool syncOnce(std::string *errorMsg = nullptr);
+
+    // 设置消息回调函数
+    void setMessageCallback(MessageCallback cb, void *ctx);
+
+    // 连接状态查询
+    bool isConnected() const;
+    
+    // 获取最后的错误信息
+    std::string getLastError() const;
+};
+```
+
+#### 使用示例
+
+```cpp
+#include "mqttc_client.h"
+
+mqttc::MqttCClient client;
+
+// 1. 配置
+client.configure("mqtt://192.168.1.100:1883", "device_001", "user", "pass");
+
+// 2. 连接
+std::string errMsg;
+if (!client.connect(&errMsg)) {
+    printf("Connect failed: %s\n", errMsg.c_str());
+    return;
+}
+
+// 3. 发布消息
+const char *payload = "Hello MQTT";
+client.publish("test/topic", payload, strlen(payload), 1, false);
+
+// 4. 定期调用 syncOnce 以处理消息
+while (client.isConnected()) {
+    client.syncOnce();
+    usleep(100000); // 100ms
+}
+
+// 5. 断开
+client.disconnect();
+```
+
+### 全局 MQTT 客户端管理（mqtt_global）
+
+**头文件**: `app/inc/mqtt_global.h`  
+**实现**: `app/src/mqtt_global.cpp`
+
+为避免同一进程中多个 MQTT 客户端实例，提供全局单例管理：
+
+```cpp
+namespace mqttc {
+
+// 获取全局 MQTT-C 客户端实例（单例）
+MqttCClient &GetMqttClient();
+
+}
+```
+
+#### 使用示例
+
+```cpp
+#include "mqtt_global.h"
+
+// 任何地方都可以获取同一个全局实例
+mqttc::MqttCClient &client = mqttc::GetMqttClient();
+client.publish("device/sensor", data, size, 1, false);
+```
+
+### MQTT 消息负载构建（mqtt_payload_builder）
+
+**头文件**: `app/inc/mqtt_payload_builder.h`  
+**实现**: `app/src/mqtt_payload_builder.cpp`
+
+提供快速构建符合 Qt 客户端解析格式的 JSON 负载，以及图像 Base64 编码功能：
+
+#### 核心函数
+
+```cpp
+namespace mqttc {
+
+// 设置/获取设备 ID（用于 JSON payload）
+void SetMqttPayloadDeviceId(const std::string &deviceId);
+std::string GetMqttPayloadDeviceId();
+
+// 设置/获取 MQTT 主题前缀，例如 "ciallo_ohos"
+// 前缀用于设备特定的主题和发现公告主题
+void SetMqttTopicPrefix(const std::string &prefix);
+std::string GetMqttTopicPrefix();
+
+// 构建传感器数据 JSON 负载
+// 格式：{"deviceId":"...","timestamp":"...","sensors":{...}}
+// includeImage: 是否包含最新拍照的 Base64 数据
+bool BuildSensorPayloadJson(bool includeImage, std::string &outJson, std::string *errMsg = nullptr);
+
+// 为图像消息构建 Base64 负载
+// 自动读取 PHOTO_PATH 指定的文件并进行 Base64 编码
+bool BuildImagePayloadBase64(std::string &outBase64, std::string *errMsg = nullptr);
+
+}
+```
+
+#### 使用示例
+
+```cpp
+#include "mqtt_payload_builder.h"
+
+// 配置
+mqttc::SetMqttPayloadDeviceId("device_001");
+mqttc::SetMqttTopicPrefix("ciallo_ohos");
+
+// 构建传感器 JSON
+std::string sensorJson;
+if (mqttc::BuildSensorPayloadJson(false, sensorJson)) {
+    // sensorJson 现在包含格式化的 JSON 负载
+    client.publish("ciallo_ohos/device_001/sensors", sensorJson.c_str(), sensorJson.size(), 1, false);
+}
+```
+
 ## 传感器数据获取
 
-所有传感器数据统一通过 ETS/NAPI 接口 `getDataByKey(key: string)` 获取，无需单独初始化。数据由 ESP32-S3 采集，经 WiFi UDP 广播到主板。
+所有传感器数据统一通过 ETS/NAPI 接口 `getDataByKey(key: string)` 获取，无需单独初始化。数据由 ESP32-S3 采集后进入**同一数据输入层**，可通过 WiFi UDP 或串口两种后端接入。
+说明：`UDP` 与 `SERIAL` 为**互斥通道**，任一时刻仅启用一种（由 `sensor_data_provider::SetDataChannel()` 选择）。
+
+### 数据源抽象层（sensor_data_provider）
+
+**头文件**: `app/inc/sensor_data_provider.h`
+
+为适应不同的数据传输方式，系统提供了 `sensor_data_provider` 抽象层，用于屏蔽不同数据源的差异：
+- **UDP 模式**（默认）：通过 WiFi UDP 广播接收 ESP32-S3 的传感器数据
+- **SERIAL 模式**：通过串口接收传感器数据
+- 二者同属一个数据通道层，**互斥二选一**（不是并行叠加）
+
+#### 核心函数
+
+```cpp
+// 切换数据源通道
+void SetDataChannel(DataChannel channel);
+
+// 获取当前数据源通道
+DataChannel GetDataChannel();
+
+// 从当前选定的后端读取传感器数据（由 NAPI 层调用）
+float GetDataByKey(const char *key);
+
+// 通过当前选定的后端发送相机捕获命令
+int SendCommand(const char *command);
+```
+
+补充说明：
+- 在调用 `SetDataChannel(...)` 后，`sensor_data_provider` 会启动一次后台查询线程（仅启动一次）。
+- 后台线程会周期性通过 `SendCommand("GET_DATA")` 向 ESP32 请求最新数据。
+- `GetDataByKey(...)` 仅负责读取当前通道下已缓存/已接收的数据并解析。
+
+#### 数据通道枚举
+
+```cpp
+enum class DataChannel {
+    SERIAL = 0,  // 串口接收
+    UDP = 1,     // UDP 广播接收（默认）
+};
+```
+
+#### WiFi UDP 接收模块（wifi_udp_receiver）
+
+**头文件**: `app/inc/wifi_udp_receiver.h`
+
+当数据通道为 UDP 模式时，使用此模块监听来自 ESP32-S3 的广播数据：
+- **接收端口**：9000
+- **发送端口**：9001
+- **协议**：UDP 广播
+- **数据格式**：纯文本，键值对形式（例如 `Humi:45.3;Temp:25.5;...`）
+
+#### ESP32-S3 端数据发送
+
+ESP32-S3 在 `esp32_s3/src/main.cpp` 中按命令采集并回传传感器数据：
+- **触发方式**：收到主控 `GET_DATA` 命令后执行一次采集与回传
+- **数据来源**：
+  - DHT11（环境温度、湿度）
+  - JW01 模块（CH2O、TVOC、CO₂）
+  - RS485 土壤多参数传感器（土壤湿度、温度、EC、pH、NPK、盐度、TDS）
+  - 光敏传感器（光照强度）
+- **传输格式**：
+  ```
+  Humi:45.3;Temp:25.5;CH2O:10.5;TVOC:45;CO_2:800;SoilHumi:65.0;SoilTemp:22.5;EC:1200;pH:6.5;N:100;P:50;K:80;Salt:200;TDS:500;Light:75.0;
+  ```
+
+```c
+// 初始化 UDP 接收线程（监听 0.0.0.0:9000）
+void init_wifi_udp_receiver(void);
+
+// 获取最近接收到的 UDP 文本数据
+int wifi_get_latest_data(char *outBuf, size_t bufLen);
+
+// 通过 UDP 广播发送数据
+int wifi_send_broadcast(const char *buf, int len);
+```
 
 ### ETS/NAPI 接口（@ohos.myproject）
 
@@ -209,7 +454,7 @@ if (light >= 0) {
 ```
 
 说明：
-- ESP32-S3 每秒采集一次所有传感器数据，通过 UDP 广播发送（格式见 `esp32_s3/src/main.cpp`）。
+- 主控通过 `sensor_data_provider` 后台线程周期发送 `GET_DATA`，ESP32 收到后返回一帧最新数据。
 - 主板通过 WiFi UDP 接收数据并缓存，ETS 侧通过 `getDataByKey()` 读取缓存值。
 - 若某个数据长时间未更新（与之前的采集周期超出阈值），该键返回 -1 表示数据无效。
 
@@ -278,6 +523,8 @@ int pump_deinit(void);
 
 ## 串口通信
 
+说明：本模块与 `wifi_udp_receiver` 处于同一数据通信层，通过 `sensor_data_provider` 做互斥通道选择；当通道为 `SERIAL` 时才使用本模块作为数据来源。
+
 **头文件**: `app/inc/myserial.h`
 
 ### 宏定义
@@ -306,6 +553,29 @@ unsigned char* return_recv(int* len);
 ```
 返回接收到的数据。`len`为接收数据长度指针，返回值为接收数据缓冲区。
 **注意**: 调用者负责释放返回的内存。
+
+## UDP通信（wifi_udp_receiver）
+
+说明：本模块与 `myserial` 处于同一数据通信层，通过 `sensor_data_provider` 做互斥通道选择；当通道为 `UDP` 时才使用本模块作为数据来源。
+
+**头文件**: `app/inc/wifi_udp_receiver.h`
+
+### 函数
+
+```c
+void init_wifi_udp_receiver(void);
+```
+初始化 UDP 接收线程（监听 `0.0.0.0:9000`）。
+
+```c
+int wifi_get_latest_data(char *outBuf, size_t bufLen);
+```
+获取最近一次收到的 UDP 文本数据。返回 `0` 表示成功，有数据被拷贝；其他值表示当前还没有有效数据。
+
+```c
+int wifi_send_broadcast(const char *buf, int len);
+```
+通过 UDP 广播发送数据。返回 `0` 表示成功，`-1` 表示失败。
 
 ## LED控制
 

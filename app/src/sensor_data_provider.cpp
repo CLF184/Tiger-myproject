@@ -1,14 +1,24 @@
 #include "sensor_data_provider.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 #include "myserial.h"
 #include "wifi_udp_receiver.h"
 
+namespace sensor {
+int SendCommand(const char *command);
+}
+
 namespace {
 
 sensor::DataChannel g_dataChannel = sensor::DataChannel::UDP;
+constexpr const char *kGetDataCmd = "GET_DATA";
+constexpr auto kQueryInterval = std::chrono::seconds(1);
+std::atomic<bool> g_queryThreadStarted(false);
 
 float ParseValueFromText(const char *text, const char *key)
 {
@@ -83,6 +93,22 @@ int SendCaptureFromUdp(const char *command)
     return wifi_send_broadcast(command, static_cast<int>(std::strlen(command)));
 }
 
+void QueryLoop()
+{
+    while (true) {
+        (void)sensor::SendCommand(kGetDataCmd);
+        std::this_thread::sleep_for(kQueryInterval);
+    }
+}
+
+void EnsureQueryThreadStarted()
+{
+    bool expected = false;
+    if (g_queryThreadStarted.compare_exchange_strong(expected, true)) {
+        std::thread(QueryLoop).detach();
+    }
+}
+
 } // namespace
 
 namespace sensor {
@@ -90,6 +116,7 @@ namespace sensor {
 void SetDataChannel(DataChannel channel)
 {
     g_dataChannel = channel;
+    EnsureQueryThreadStarted();
 }
 
 DataChannel GetDataChannel()
@@ -105,7 +132,7 @@ float GetDataByKey(const char *key)
     return GetDataByKeyFromUdp(key);
 }
 
-int SendCaptureCommand(const char *command)
+int SendCommand(const char *command)
 {
     if (g_dataChannel == DataChannel::SERIAL) {
         return SendCaptureFromSerial(command);

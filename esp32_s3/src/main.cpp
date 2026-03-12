@@ -107,10 +107,13 @@ struct CommandHandler {
   void (*handler)(const char*);
 };
 
+void send_sensor_data_once(const char *command);
+
 const CommandHandler handlers[] = {
   // {"GPIO", controlGPIO},
   // {"PWM",  controlPWM},
   // {"ADC",  readADC},
+  {"GET_DATA",send_sensor_data_once},
   {"CAPTURE",camera_module::capture_command},
   {"SETFRAMESIZE",camera_module::set_frame_size_command}
 };
@@ -184,38 +187,36 @@ void udpReceiveTask(void *pvParameters) {
   }
 }
 
-void send_data(void *pvParameters) {
+void send_sensor_data_once(const char *command) {
+  (void)command;
   dht_module::DhtData dht = {0};
   jw01_module::Jw01Data jw01 = {0};
   soil_module::SoilData soil = {0};
   char buffer[240];
-  while (true) {
-    dht_module::read(dht);
-    jw01_module::get(jw01);
-    soil_module::get(soil);
-    int rawLight = analogRead(LIGHT_SENSOR_PIN);
-    float light = (rawLight / 4095.0f) * 100.0f; // 转换为百分比 0~100
-    snprintf(buffer,
-               sizeof(buffer),
-               "Humi:%.3f;Temp:%.3f;CH2O:%.3f;TVOC:%.3f;CO_2:%.3f;SoilHumi:%.1f;SoilTemp:%.1f;EC:%.0f;pH:%.1f;N:%.0f;P:%.0f;K:%.0f;Salt:%.0f;TDS:%.0f;Light:%.1f;",
-               dht.humidity,
-               dht.temperature,
-               jw01.ch2o,
-               jw01.tvoc,
-               jw01.co2,
-               soil.moisture,
-               soil.temperature,
-               soil.ec,
-               soil.ph,
-               soil.n,
-               soil.p,
-               soil.k,
-               soil.salt,
-               soil.tds,
-               light);
-    transmitData(buffer, strlen(buffer), FRAME_END);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
+  dht_module::read(dht);
+  jw01_module::get(jw01);
+  soil_module::get(soil);
+  int rawLight = analogRead(LIGHT_SENSOR_PIN);
+  float light = (rawLight / 4095.0f) * 100.0f; // 转换为百分比 0~100
+  snprintf(buffer,
+             sizeof(buffer),
+             "Humi:%.3f;Temp:%.3f;CH2O:%.3f;TVOC:%.3f;CO_2:%.3f;SoilHumi:%.1f;SoilTemp:%.1f;EC:%.0f;pH:%.1f;N:%.0f;P:%.0f;K:%.0f;Salt:%.0f;TDS:%.0f;Light:%.1f;",
+             dht.humidity,
+             dht.temperature,
+             jw01.ch2o,
+             jw01.tvoc,
+             jw01.co2,
+             soil.moisture,
+             soil.temperature,
+             soil.ec,
+             soil.ph,
+             soil.n,
+             soil.p,
+             soil.k,
+             soil.salt,
+             soil.tds,
+             light);
+  transmitData(buffer, strlen(buffer), FRAME_END);
 }
 
 void setup() {
@@ -242,7 +243,6 @@ void setup() {
                     SOIL_RS485_ADDR,
                     1000);
   xTaskCreate(processCommandshandler, "processCommandshandler", 4096, NULL, 1, NULL);
-  xTaskCreate(send_data, "send_data", 4096, NULL, 1, NULL);
   xTaskCreate(udpReceiveTask, "udpReceiveTask", 4096, NULL, 1, NULL);
 }
 

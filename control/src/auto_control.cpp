@@ -271,7 +271,7 @@ void ApplyCommandJson(const std::string &jsonRaw)
     // capture: 非 0 触发一次拍照指令
     if (GetNumberField(json, "capture", &v)) {
         if (v != 0.0) {
-            (void)sensor::SendCaptureCommand("CAPTURE");
+            (void)sensor::SendCommand("CAPTURE");
         }
     }
 
