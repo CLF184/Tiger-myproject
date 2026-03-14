@@ -13,6 +13,7 @@
 #include "mqtt_payload_builder.h" // mqttc::BuildSensorPayloadJson
 
 #include "cJSON.h"
+#include "sensor_data_provider.h"
 // #include "hilog/log.h"
 
 // #define LOG_TAG "LlamaClient"
@@ -22,6 +23,89 @@
 
 namespace llama {
 
+// 独立实现：返回包含单位的传感器 JSON（结构：sensors->{key: {value:..., unit:"..."}}）
+static bool BuildSensorPayloadJsonLocal(bool /*includeImage*/, std::string &outJson, std::string *errMsg)
+{
+    // 以与 mqtt_payload_builder 相同的 key 读取缓存数据，但将每项封装为 {value, unit}
+    float soilMoistureF = sensor::GetDataByKey("SoilHumi");
+    int soilMoisture = static_cast<int>(soilMoistureF + (soilMoistureF >= 0 ? 0.5f : -0.5f));
+
+    float lightF = sensor::GetDataByKey("Light");
+    int lightLevel = static_cast<int>(lightF + (lightF >= 0 ? 0.5f : -0.5f));
+
+    float temperature = sensor::GetDataByKey("Temp");
+    float humidityF = sensor::GetDataByKey("Humi");
+    float formaldehyde = sensor::GetDataByKey("CH2O");
+    float tvoc = sensor::GetDataByKey("TVOC");
+    float co2F = sensor::GetDataByKey("CO_2");
+
+    float soilTemp = sensor::GetDataByKey("SoilTemp");
+    float ec = sensor::GetDataByKey("EC");
+    float ph = sensor::GetDataByKey("pH");
+    float n = sensor::GetDataByKey("N");
+    float p = sensor::GetDataByKey("P");
+    float k = sensor::GetDataByKey("K");
+    float salt = sensor::GetDataByKey("Salt");
+    float tds = sensor::GetDataByKey("TDS");
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == nullptr) {
+        if (errMsg) *errMsg = "cJSON_CreateObject failed";
+        return false;
+    }
+
+    cJSON *sensors = cJSON_AddObjectToObject(root, "sensors");
+    if (sensors == nullptr) {
+        if (errMsg) *errMsg = "cJSON_AddObjectToObject failed";
+        cJSON_Delete(root);
+        return false;
+    }
+
+    auto add_measure = [&](const char *name, double value, const char *unit) {
+        cJSON *obj = cJSON_CreateObject();
+        if (obj == nullptr) return false;
+        if (cJSON_AddNumberToObject(obj, "value", static_cast<double>(value)) == nullptr) {
+            cJSON_Delete(obj);
+            return false;
+        }
+        if (unit && cJSON_AddStringToObject(obj, "unit", unit) == nullptr) {
+            cJSON_Delete(obj);
+            return false;
+        }
+        cJSON_AddItemToObject(sensors, name, obj);
+        return true;
+    };
+
+    if (!add_measure("soilMoisture", soilMoisture, "%")) { cJSON_Delete(root); if (errMsg) *errMsg = "add soilMoisture failed"; return false; }
+    if (!add_measure("lightLevel", lightLevel, "%")) { cJSON_Delete(root); if (errMsg) *errMsg = "add lightLevel failed"; return false; }
+    if (!add_measure("temperature", temperature, "°C")) { cJSON_Delete(root); if (errMsg) *errMsg = "add temperature failed"; return false; }
+    if (!add_measure("humidity", humidityF, "%")) { cJSON_Delete(root); if (errMsg) *errMsg = "add humidity failed"; return false; }
+    if (!add_measure("formaldehyde", formaldehyde, "mg/m3")) { cJSON_Delete(root); if (errMsg) *errMsg = "add formaldehyde failed"; return false; }
+    if (!add_measure("tvoc", tvoc, "ppb")) { cJSON_Delete(root); if (errMsg) *errMsg = "add tvoc failed"; return false; }
+    if (!add_measure("co2", co2F, "ppm")) { cJSON_Delete(root); if (errMsg) *errMsg = "add co2 failed"; return false; }
+
+    if (!add_measure("soilTemperature", soilTemp, "°C")) { cJSON_Delete(root); if (errMsg) *errMsg = "add soilTemperature failed"; return false; }
+    if (!add_measure("ec", ec, "mS/cm")) { cJSON_Delete(root); if (errMsg) *errMsg = "add ec failed"; return false; }
+    if (!add_measure("ph", ph, "")) { cJSON_Delete(root); if (errMsg) *errMsg = "add ph failed"; return false; }
+    if (!add_measure("nitrogen", n, "mg/L")) { cJSON_Delete(root); if (errMsg) *errMsg = "add nitrogen failed"; return false; }
+    if (!add_measure("phosphorus", p, "mg/L")) { cJSON_Delete(root); if (errMsg) *errMsg = "add phosphorus failed"; return false; }
+    if (!add_measure("potassium", k, "mg/L")) { cJSON_Delete(root); if (errMsg) *errMsg = "add potassium failed"; return false; }
+    if (!add_measure("salt", salt, "mg/L")) { cJSON_Delete(root); if (errMsg) *errMsg = "add salt failed"; return false; }
+    if (!add_measure("tds", tds, "ppm")) { cJSON_Delete(root); if (errMsg) *errMsg = "add tds failed"; return false; }
+
+    char *printed = cJSON_PrintUnformatted(root);
+    if (printed == nullptr) {
+        if (errMsg) *errMsg = "cJSON_PrintUnformatted failed";
+        cJSON_Delete(root);
+        return false;
+    }
+
+    outJson.assign(printed);
+    cJSON_free(printed);
+    cJSON_Delete(root);
+    return true;
+}
+
 static std::string BuildEnvContextSystemMessageSnippet(bool *okOut = nullptr)
 {
     if (okOut) {
@@ -30,7 +114,7 @@ static std::string BuildEnvContextSystemMessageSnippet(bool *okOut = nullptr)
 
     std::string json;
     std::string err;
-    if (!mqttc::BuildSensorPayloadJson(false /* includeImage */, json, &err)) {
+    if (!BuildSensorPayloadJsonLocal(false /* includeImage */, json, &err)) {
         return std::string();
     }
 
