@@ -358,21 +358,19 @@ void ControlLoop()
             const double soil = static_cast<double>(sensor::GetDataByKey("SoilHumi"));
             const double temp = static_cast<double>(sensor::GetDataByKey("Temp"));
             const double co2 = static_cast<double>(sensor::GetDataByKey("CO_2"));
-
-            int lightValue = 0;
-            bool haveLight = (light_sensor_read(&lightValue) == 0);
+            const double light = static_cast<double>(sensor::GetDataByKey("light"));
 
             // 启用瞬间：用当前读数初始化状态，避免迟滞区间沿用旧状态
             if (!lastEnabled) {
                 g_pumpOn = (soil <= t.soil_on);
-                g_ledOn = haveLight ? (lightValue <= t.light_on) : false;
+                g_ledOn = (light <= t.light_on);
                 const double co2OnInit = isDay ? t.co2_on : t.co2_night_on;
                 // 白天：温度或 CO2 超标任一条件满足则开启
                 // 夜间：更偏向温度控制，只有温度或 CO2 明显超标才开
                 g_fanOn = (temp >= t.temp_on) || (co2 >= co2OnInit);
                 // 遮阳只在白天根据光照+温度判断，夜间强制收起
                 if (isDay) {
-                    g_shadeOn = haveLight && (lightValue >= t.light_off) && (temp >= t.temp_on);
+                    g_shadeOn = (light >= t.light_off) && (temp >= t.temp_on);
                 } else {
                     g_shadeOn = false;
                 }
@@ -388,10 +386,8 @@ void ControlLoop()
             }
 
             // LED：light 低于 light_on 开，高于 light_off 关
-            if (haveLight) {
-                if (lightValue <= t.light_on) g_ledOn = true;
-                if (lightValue >= t.light_off) g_ledOn = false;
-            }
+            if (light <= t.light_on) g_ledOn = true;
+            if (light >= t.light_off) g_ledOn = false;
             if (g_ledOn) {
                 (void)LedOn();
             } else {
@@ -416,12 +412,12 @@ void ControlLoop()
             // 甲醛阈值不再参与自动蜂鸣器控制，蜂鸣器仅通过手动/命令触发
 
             // 舵机遮阳：仅在白天根据光照+温度控制，夜间强制收起遮阳板
-            if (haveLight) {
+            {
                 bool needShade = false;
                 if (isDay) {
-                    if (lightValue >= t.light_off && temp >= t.temp_on) {
+                    if (light >= t.light_off && temp >= t.temp_on) {
                         needShade = true;
-                    } else if (lightValue <= t.light_on && temp <= t.temp_off) {
+                    } else if (light <= t.light_on && temp <= t.temp_off) {
                         needShade = false;
                     } else {
                         needShade = g_shadeOn;
