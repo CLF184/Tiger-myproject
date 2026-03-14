@@ -69,7 +69,7 @@ struct Index {
   @State autoFanSpeed: number = 80;
 
   // 添加 LLaMA 相关状态变量
-  @State llamaHost: string = '192.168.1.133;
+  @State llamaHost: string = '192.168.1.133';
   @State llamaPort: string = '8080';
   @State llamaConnected: boolean = false;
   @State llamaTemperature: string = '0.7';
