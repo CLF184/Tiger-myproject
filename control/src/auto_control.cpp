@@ -358,7 +358,7 @@ void ControlLoop()
             const double soil = static_cast<double>(sensor::GetDataByKey("SoilHumi"));
             const double temp = static_cast<double>(sensor::GetDataByKey("Temp"));
             const double co2 = static_cast<double>(sensor::GetDataByKey("CO_2"));
-            const double light = static_cast<double>(sensor::GetDataByKey("light"));
+            const double light = static_cast<double>(sensor::GetDataByKey("Light"));
 
             // 启用瞬间：用当前读数初始化状态，避免迟滞区间沿用旧状态
             if (!lastEnabled) {
