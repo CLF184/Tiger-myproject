@@ -45,8 +45,8 @@ struct Index {
   @State autoControlEnabled: boolean = false;
   @State autoSoilOn: number = 1200;
   @State autoSoilOff: number = 1600;
-  @State autoLightOn: number = 300;
-  @State autoLightOff: number = 500;
+  @State autoLightOn: number = 30;
+  @State autoLightOff: number = 50;
   @State autoTempOn: number = 30;
   @State autoTempOff: number = 27;
   @State autoCo2On: number = 1200;
@@ -118,8 +118,8 @@ struct Index {
       const t = myproject.getAutoControlThresholds();
       this.autoSoilOn = t.soil_on;
       this.autoSoilOff = t.soil_off;
-      this.autoLightOn = t.light_on;
-      this.autoLightOff = t.light_off;
+      this.autoLightOn = Math.max(0, Math.min(100, t.light_on));
+      this.autoLightOff = Math.max(0, Math.min(100, t.light_off));
       this.autoTempOn = t.temp_on;
       this.autoTempOff = t.temp_off;
       this.autoCo2On = t.co2_on;
@@ -519,7 +519,7 @@ struct Index {
 
           Row() {
             Text('光照强度:').fontSize(16)
-            Text(`${this.lightLevel}`).fontSize(16)
+            Text(`${this.lightLevel}%`).fontSize(16)
           }.width('100%').justifyContent(FlexAlign.SpaceBetween).margin({ bottom: 8 })
 
           Row() {
@@ -799,8 +799,8 @@ struct Index {
           Slider({
             value: this.autoLightOn,
             min: 0,
-            max: 2000,
-            step: 10
+            max: 100,
+            step: 1
           })
             .onChange((value: number) => {
               this.autoLightOn = value;
@@ -811,8 +811,8 @@ struct Index {
           Slider({
             value: this.autoLightOff,
             min: 0,
-            max: 2000,
-            step: 10
+            max: 100,
+            step: 1
           })
             .onChange((value: number) => {
               this.autoLightOff = value;

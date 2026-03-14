@@ -417,14 +417,16 @@ void MainWindow::setupAutoControlPage()
     makeSpinRow(tr("土壤湿阈值 soil_off"), soilOffSpin);
 
     lightOnSpin = new QDoubleSpinBox();
-    lightOnSpin->setRange(0, 100000);
-    lightOnSpin->setValue(300);
-    makeSpinRow(tr("光照暗阈值 light_on"), lightOnSpin);
+    lightOnSpin->setRange(0, 100);
+    lightOnSpin->setDecimals(0);
+    lightOnSpin->setValue(30);
+    makeSpinRow(tr("光照暗阈值 light_on (0-100，越大越亮)"), lightOnSpin);
 
     lightOffSpin = new QDoubleSpinBox();
-    lightOffSpin->setRange(0, 100000);
-    lightOffSpin->setValue(500);
-    makeSpinRow(tr("光照亮阈值 light_off"), lightOffSpin);
+    lightOffSpin->setRange(0, 100);
+    lightOffSpin->setDecimals(0);
+    lightOffSpin->setValue(50);
+    makeSpinRow(tr("光照亮阈值 light_off (0-100，越大越亮)"), lightOffSpin);
 
     tempOnSpin = new QDoubleSpinBox();
     tempOnSpin->setRange(-40, 100);
@@ -925,7 +927,7 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
             labelDeviceId->setText(QString("<b>🔌 设备ID:</b><br><span style='font-size:16px;'>%1</span>").arg(deviceId));
             labelTimestamp->setText(QString("<b>🕕 时间戳:</b><br><span style='font-size:16px;'>%1</span>").arg(timestamp));
             labelSoilMoisture->setText(QString("<b>🌱 土壤湿度:</b><br><span style='font-size:16px;'>%1</span>").arg(soilMoisture));
-            labelLightLevel->setText(QString("<b>☀️ 光照强度:</b><br><span style='font-size:16px;'>%1</span>").arg(lightLevel));
+            labelLightLevel->setText(QString("<b>☀️ 光照强度:</b><br><span style='font-size:16px;'>%1 %</span>").arg(lightLevel));
             labelTemperature->setText(QString("<b>🌡️ 温度:</b><br><span style='font-size:16px;'>%1 °C</span>").arg(temperature));
             labelHumidity->setText(QString("<b>💧 湿度:</b><br><span style='font-size:16px;'>%1 %</span>").arg(humidity));
             labelFormaldehyde->setText(QString("<b>🧪 甲醛:</b><br><span style='font-size:16px;'>%1 ppm</span>").arg(formaldehyde));
@@ -1066,8 +1068,8 @@ void MainWindow::publishAutoControlCommand()
     mode["enabled"] = autoControlEnableCheck && autoControlEnableCheck->isChecked();
     mode["soil_on"] = soilOnSpin ? soilOnSpin->value() : 1200.0;
     mode["soil_off"] = soilOffSpin ? soilOffSpin->value() : 1600.0;
-    mode["light_on"] = lightOnSpin ? lightOnSpin->value() : 300.0;
-    mode["light_off"] = lightOffSpin ? lightOffSpin->value() : 500.0;
+    mode["light_on"] = lightOnSpin ? lightOnSpin->value() : 30.0;
+    mode["light_off"] = lightOffSpin ? lightOffSpin->value() : 50.0;
     mode["temp_on"] = tempOnSpin ? tempOnSpin->value() : 30.0;
     mode["temp_off"] = tempOffSpin ? tempOffSpin->value() : 27.0;
     mode["co2_on"] = co2OnSpin ? co2OnSpin->value() : 1200.0;

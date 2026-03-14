@@ -110,7 +110,9 @@ void ClampThresholds(AutoControlThresholds &t)
     if (t.soil_off < 0) t.soil_off = 0;
     if (t.light_on < 0) t.light_on = 0;
     if (t.light_off < 0) t.light_off = 0;
-
+    if (t.light_on > 100) t.light_on = 100;
+    if (t.light_off > 100) t.light_off = 100;
+    
     if (t.fan_speed < 0) t.fan_speed = 0;
     if (t.fan_speed > 100) t.fan_speed = 100;
 

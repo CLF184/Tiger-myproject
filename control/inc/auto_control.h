@@ -16,9 +16,9 @@ struct AutoControlThresholds {
     int soil_on = 1200;
     int soil_off = 1600;
 
-    // lightLevel: 数值越小越暗
-    int light_on = 300;
-    int light_off = 500;
+    // lightLevel: 0-100，数值越大越亮
+    int light_on = 30;
+    int light_off = 50;
 
     // temperature: 摄氏度（来自串口键 "Temp"）
     double temp_on = 30.0;
