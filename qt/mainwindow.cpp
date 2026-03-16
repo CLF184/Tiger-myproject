@@ -831,7 +831,7 @@ void MainWindow::onMQTTMessageReceived(const QByteArray &message, const QMqttTop
     QString topicStr = topic.name();
 
     // discovery: <prefix>/announce/<deviceId>
-    if (!mqttTopicPrefix.isEmpty() && topicStr.startsWith(mqttTopicPrefix + QStringLiteral("/announce/"))) {
+    if (!mqttTopicPrefix.isEmpty() && topicStr.startsWith(mqttTopicPrefix + QStringLiteral("/announce"))) {
         QJsonDocument doc = QJsonDocument::fromJson(message);
         if (!doc.isObject()) {
             qDebug() << "discovery JSON解析失败";
