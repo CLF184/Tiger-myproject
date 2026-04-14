@@ -8,6 +8,7 @@
 #include <thread>
 #include <utility>
 #include <ctime>
+#include <cmath>
 
 #include "buzzer_control.h"
 #include "cJSON.h"
@@ -36,6 +37,32 @@ bool g_ledOn = false;
 bool g_fanOn = false;
 bool g_buzzerOn = false;
 bool g_shadeOn = false;  // 遮阳板当前是否处于遮挡状态
+
+// 采用 Welford 在线统计算法实时计算环境参数的均值与方差
+struct WelfordEstimator {
+    int count = 0;
+    double mean = 0.0;
+    double M2 = 0.0;
+
+    void update(double newValue) {
+        count++;
+        double delta = newValue - mean;
+        mean += delta / count;
+        double delta2 = newValue - mean;
+        M2 += delta * delta2;
+    }
+
+    double getVariance() const {
+        if (count < 2) return 0.0;
+        return M2 / count; 
+    }
+
+    double getStdDev() const {
+        return std::sqrt(getVariance());
+    }
+};
+
+WelfordEstimator g_lightEstimator; // 用于估计光照波动情况
 
 // 简单的昼/夜判断：本地时间 6:00-18:00 视为白天，其余为夜间
 bool IsDaytime()
@@ -360,17 +387,38 @@ void ControlLoop()
             const double co2 = static_cast<double>(sensor::GetDataByKey("CO_2"));
             const double light = static_cast<double>(sensor::GetDataByKey("Light"));
 
+            // --- 论文亮点：在线增量均值/方差估计与动态自适应阈值 ---
+            // 场景：温室光照天然波动剧烈（如多云天气云层快速掠过）。
+            // 如果仅依赖固定的光照上下限（light_on开启，light_off关闭），很容易造成补光灯频繁启停（继电器抖动）。
+            // 通过在线估计光照的方差，如果波动较大，主动拉大利差（降低开启下限，提高关闭上限），
+            // 将设备启停频次压下来，保护硬件；反之，若处于稳定状态则采用原设定值精确补光。
+            g_lightEstimator.update(light);
+            double currentLightStdDev = g_lightEstimator.getStdDev();
+
+            double dynamic_light_on = t.light_on;
+            double dynamic_light_off = t.light_off;
+            
+            // 当积累样本超过 10 且标准差大于 5.0 时，认为出现剧烈波动
+            if (g_lightEstimator.count > 10 && currentLightStdDev > 5.0) {
+                dynamic_light_on -= 5.0;  // 动态向下拓宽下限
+                dynamic_light_off += 5.0; // 动态向上拓宽上限
+                
+                if (dynamic_light_on < 0.0) dynamic_light_on = 0.0;
+                if (dynamic_light_off > 100.0) dynamic_light_off = 100.0;
+            }
+            // -----------------------------------------------------------
+
             // 启用瞬间：用当前读数初始化状态，避免迟滞区间沿用旧状态
             if (!lastEnabled) {
                 g_pumpOn = (soil <= t.soil_on);
-                g_ledOn = (light <= t.light_on);
+                g_ledOn = (light <= dynamic_light_on); // 初始化时也采用动态自适应上下限处理
                 const double co2OnInit = isDay ? t.co2_on : t.co2_night_on;
                 // 白天：温度或 CO2 超标任一条件满足则开启
                 // 夜间：更偏向温度控制，只有温度或 CO2 明显超标才开
                 g_fanOn = (temp >= t.temp_on) || (co2 >= co2OnInit);
-                // 遮阳只在白天根据光照+温度判断，夜间强制收起
+            // 遮阳只在白天根据光照+温度判断，夜间强制收起
                 if (isDay) {
-                    g_shadeOn = (light >= t.light_off) && (temp >= t.temp_on);
+                    g_shadeOn = (light >= dynamic_light_off) && (temp >= t.temp_on);
                 } else {
                     g_shadeOn = false;
                 }
@@ -385,9 +433,9 @@ void ControlLoop()
                 (void)pump_off();
             }
 
-            // LED：light 低于 light_on 开，高于 light_off 关
-            if (light <= t.light_on) g_ledOn = true;
-            if (light >= t.light_off) g_ledOn = false;
+            // LED：light 低于动态调节的 light_on 开启，高于 light_off 关闭
+            if (light <= dynamic_light_on) g_ledOn = true;
+            if (light >= dynamic_light_off) g_ledOn = false;
             if (g_ledOn) {
                 (void)LedOn();
             } else {
@@ -415,9 +463,10 @@ void ControlLoop()
             {
                 bool needShade = false;
                 if (isDay) {
-                    if (light >= t.light_off && temp >= t.temp_on) {
+                    // 同步使用动态估计的高限判断
+                    if (light >= dynamic_light_off && temp >= t.temp_on) {
                         needShade = true;
-                    } else if (light <= t.light_on && temp <= t.temp_off) {
+                    } else if (light <= dynamic_light_on && temp <= t.temp_off) {
                         needShade = false;
                     } else {
                         needShade = g_shadeOn;
