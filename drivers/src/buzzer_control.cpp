@@ -40,8 +40,8 @@ int BuzzerInit(void)
         return -2;
     }
     
-    // 初始状态设为低电平（蜂鸣器关闭）
-    ret = UM_GPIO_SetValue(BUZZER_GPIO_PIN, UM_GPIO_LOW_LEVE);
+    // 初始状态设为高电平（蜂鸣器关闭）
+    ret = UM_GPIO_SetValue(BUZZER_GPIO_PIN, UM_GPIO_HIGH_LEVE);
     if (ret < 0) {
         printf("Failed to set GPIO %d value, ret = %d\n", BUZZER_GPIO_PIN, ret);
         return -3;
@@ -59,7 +59,7 @@ int BuzzerInit(void)
 int BuzzerControl(int on)
 {
     int ret;
-    int value = on ? UM_GPIO_HIGH_LEVE : UM_GPIO_LOW_LEVE;
+    int value = on ? UM_GPIO_LOW_LEVE : UM_GPIO_HIGH_LEVE; // 根据实际电路设计，需要反转控制信号（0/1）
     
     // 设置GPIO电平控制蜂鸣器
     ret = UM_GPIO_SetValue(BUZZER_GPIO_PIN, value);

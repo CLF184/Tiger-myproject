@@ -407,13 +407,15 @@ void MainWindow::setupAutoControlPage()
     };
 
     soilOnSpin = new QDoubleSpinBox();
-    soilOnSpin->setRange(0, 100000);
-    soilOnSpin->setValue(1200);
+    soilOnSpin->setRange(0, 100);
+    soilOnSpin->setDecimals(0);
+    soilOnSpin->setValue(30);
     makeSpinRow(tr("土壤干阈值 soil_on"), soilOnSpin);
 
     soilOffSpin = new QDoubleSpinBox();
-    soilOffSpin->setRange(0, 100000);
-    soilOffSpin->setValue(1600);
+    soilOffSpin->setRange(0, 100);
+    soilOffSpin->setDecimals(0);
+    soilOffSpin->setValue(50);
     makeSpinRow(tr("土壤湿阈值 soil_off"), soilOffSpin);
 
     lightOnSpin = new QDoubleSpinBox();
@@ -1066,8 +1068,8 @@ void MainWindow::publishAutoControlCommand()
 {
     QJsonObject mode;
     mode["enabled"] = autoControlEnableCheck && autoControlEnableCheck->isChecked();
-    mode["soil_on"] = soilOnSpin ? soilOnSpin->value() : 1200.0;
-    mode["soil_off"] = soilOffSpin ? soilOffSpin->value() : 1600.0;
+    mode["soil_on"] = soilOnSpin ? soilOnSpin->value() : 30.0;
+    mode["soil_off"] = soilOffSpin ? soilOffSpin->value() : 50.0;
     mode["light_on"] = lightOnSpin ? lightOnSpin->value() : 30.0;
     mode["light_off"] = lightOffSpin ? lightOffSpin->value() : 50.0;
     mode["temp_on"] = tempOnSpin ? tempOnSpin->value() : 30.0;

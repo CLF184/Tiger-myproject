@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <algorithm>
 #include <ctime>
 
 #include "buzzer_control.h"
@@ -108,6 +109,9 @@ void ClampThresholds(AutoControlThresholds &t)
 {
     if (t.soil_on < 0) t.soil_on = 0;
     if (t.soil_off < 0) t.soil_off = 0;
+    // 土壤体积含水率按百分比处理（0-100）
+    if (t.soil_on > 100) t.soil_on = 100;
+    if (t.soil_off > 100) t.soil_off = 100;
     if (t.light_on < 0) t.light_on = 0;
     if (t.light_off < 0) t.light_off = 0;
     if (t.light_on > 100) t.light_on = 100;
@@ -132,10 +136,48 @@ void ClampThresholds(AutoControlThresholds &t)
     if (t.k_min > t.k_max && !(t.k_min == 0.0 && t.k_max == 0.0)) std::swap(t.k_min, t.k_max);
 }
 
+// ----------------- 模糊控制辅助函数 -----------------
+// 返回在区间 [on, off] 内线性下降的“需要度”（用于当变量越低越需要激活的情况，
+// 例如土壤湿度：低湿度 -> 更需要灌溉）。当 on >= off 时退化为原始的阈值行为。
+double FuzzyLowerDegree(double x, double on, double off)
+{
+    if (on >= off) {
+        return (x <= on) ? 1.0 : 0.0;
+    }
+    if (x <= on) return 1.0;
+    if (x >= off) return 0.0;
+    return (off - x) / (off - on);
+}
+
+// 返回在区间 [on, off] 内线性上升的“需要度”（用于当变量越高越需要激活的情况，
+// 例如温度/CO2/光照：越高越需要风扇/遮阳）。当 on >= off 时退化为原始的阈值行为。
+double FuzzyUpperDegree(double x, double on, double off)
+{
+    if (on >= off) {
+        return (x >= on) ? 1.0 : 0.0;
+    }
+    if (x <= on) return 0.0;
+    if (x >= off) return 1.0;
+    return (x - on) / (off - on);
+}
+
+// 模糊开启/关闭判定的上下阈（可以后续调整为可配置）
+static constexpr double kFuzzyOnThreshold = 0.6;
+static constexpr double kFuzzyOffThreshold = 0.4;
+
+// 将 degree（0..1）映射为风扇转速（0..maxSpeed）
+int DegreeToFanSpeed(double degree, int maxSpeed)
+{
+    if (degree <= 0.0) return 0;
+    if (degree >= 1.0) return maxSpeed;
+    return static_cast<int>(std::round(degree * maxSpeed));
+}
+
+
 void ApplyCommandJson(const std::string &jsonRaw)
 {
     // 仅支持两种格式（互斥）：
-    // 1) 仅 mode：{"mode": {"enabled":true,"soil_on":1200,...}}
+    // 1) 仅 mode：{"mode": {"enabled":true,"soil_on":30,...}} （soil_on/off 单位为百分比 0-100）
     // 2) 仅 control：{"control": {"led":1,"pump":0,...}}
 
     cJSON *root = cJSON_Parse(jsonRaw.c_str());
@@ -377,37 +419,55 @@ void ControlLoop()
             }
 
             // 水泵：soil 低于 soil_on 开，高于 soil_off 关
-            if (soil <= t.soil_on) g_pumpOn = true;
-            if (soil >= t.soil_off) g_pumpOn = false;
-            if (g_pumpOn) {
-                (void)pump_on();
-            } else {
-                (void)pump_off();
+            // 使用模糊控制：根据 soil 在 [soil_on, soil_off] 之间线性计算“需要灌溉度”。
+            {
+                double soilDegree = FuzzyLowerDegree(soil, static_cast<double>(t.soil_on), static_cast<double>(t.soil_off));
+                if (soilDegree >= kFuzzyOnThreshold) g_pumpOn = true;
+                else if (soilDegree <= kFuzzyOffThreshold) g_pumpOn = false;
+
+                if (g_pumpOn) {
+                    (void)pump_on();
+                } else {
+                    (void)pump_off();
+                }
             }
 
-            // LED：light 低于 light_on 开，高于 light_off 关
-            if (light <= t.light_on) g_ledOn = true;
-            if (light >= t.light_off) g_ledOn = false;
-            if (g_ledOn) {
-                (void)LedOn();
-            } else {
-                (void)LedOff();
+            // LED：使用模糊控制，light 越低越需要补光
+            {
+                double lightLowDegree = FuzzyLowerDegree(light, static_cast<double>(t.light_on), static_cast<double>(t.light_off));
+                if (lightLowDegree >= kFuzzyOnThreshold) g_ledOn = true;
+                else if (lightLowDegree <= kFuzzyOffThreshold) g_ledOn = false;
+
+                if (g_ledOn) {
+                    (void)LedOn();
+                } else {
+                    (void)LedOff();
+                }
             }
 
             // 风扇：
             // - 白天：使用 co2_on/co2_off
             // - 夜间：使用 co2_night_on/co2_night_off
-            if (isDay) {
-                if (temp >= t.temp_on || co2 >= t.co2_on) g_fanOn = true;
-                if (temp <= t.temp_off && co2 <= t.co2_off) g_fanOn = false;
-            } else {
-                if (temp >= t.temp_on || co2 >= t.co2_night_on) g_fanOn = true;
-                if (temp <= t.temp_off && co2 <= t.co2_night_off) g_fanOn = false;
-            }
-            if (g_fanOn) {
-                (void)controlMotor(MOTOR_FORWARD, t.fan_speed);
-            } else {
-                (void)setMotorDirection(MOTOR_STOP);
+            // 风扇：模糊融合温度与 CO2，需要度按最大或可加权方式合成，最终映射到速度
+            {
+                double tempDegree = FuzzyUpperDegree(temp, static_cast<double>(t.temp_off), static_cast<double>(t.temp_on));
+                double co2ThresholdOn = isDay ? t.co2_on : t.co2_night_on;
+                double co2ThresholdOff = isDay ? t.co2_off : t.co2_night_off;
+                double co2Degree = FuzzyUpperDegree(co2, static_cast<double>(co2ThresholdOff), static_cast<double>(co2ThresholdOn));
+
+                // 简单规则：需要度取两者最大值（若任一项高则开启），也可以改为加权平均
+                double needDegree = std::max(tempDegree, co2Degree);
+
+                // 根据 needDegree 计算风扇速度并使用模糊开/关迟滞
+                int targetSpeed = DegreeToFanSpeed(needDegree, t.fan_speed);
+                if (needDegree >= kFuzzyOnThreshold) g_fanOn = true;
+                else if (needDegree <= kFuzzyOffThreshold) g_fanOn = false;
+
+                if (g_fanOn && targetSpeed > 0) {
+                    (void)controlMotor(MOTOR_FORWARD, targetSpeed);
+                } else {
+                    (void)setMotorDirection(MOTOR_STOP);
+                }
             }
             // 甲醛阈值不再参与自动蜂鸣器控制，蜂鸣器仅通过手动/命令触发
 
@@ -415,13 +475,13 @@ void ControlLoop()
             {
                 bool needShade = false;
                 if (isDay) {
-                    if (light >= t.light_off && temp >= t.temp_on) {
-                        needShade = true;
-                    } else if (light <= t.light_on && temp <= t.temp_off) {
-                        needShade = false;
-                    } else {
-                        needShade = g_shadeOn;
-                    }
+                    double lightHighDegree = FuzzyUpperDegree(light, static_cast<double>(t.light_on), static_cast<double>(t.light_off));
+                    double tempHighDegree = FuzzyUpperDegree(temp, static_cast<double>(t.temp_off), static_cast<double>(t.temp_on));
+                    // 需要遮阳当光强与温度同时较高，取 min 表示“且”逻辑
+                    double shadeDegree = std::min(lightHighDegree, tempHighDegree);
+                    if (shadeDegree >= kFuzzyOnThreshold) needShade = true;
+                    else if (shadeDegree <= kFuzzyOffThreshold) needShade = false;
+                    else needShade = g_shadeOn;
                 } else {
                     needShade = false;
                 }

@@ -108,8 +108,8 @@ ciallo_ohos/control
 {
     "mode": {
         "enabled": true,
-        "soil_on": 1200,
-        "soil_off": 1600,
+        "soil_on": 30,
+        "soil_off": 50,
         "light_on": 300,
         "light_off": 500,
         "temp_on": 30.0,

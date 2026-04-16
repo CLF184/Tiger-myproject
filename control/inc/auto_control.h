@@ -12,9 +12,10 @@ namespace control {
 
 struct AutoControlThresholds {
     // 说明：*_on / *_off 为迟滞阈值，避免频繁抖动。
-    // soilMoisture: 数值越小越干（具体以串口上报为准）
-    int soil_on = 1200;
-    int soil_off = 1600;
+    // soilMoisture: 设备端上报的土壤体积含水率（VWC），范围 0-100（%），
+    // 数值越小越干。将阈值单位统一为 0-100 范围。
+    int soil_on = 30;
+    int soil_off = 50;
 
     // lightLevel: 0-100，数值越大越亮
     int light_on = 30;

@@ -43,8 +43,8 @@ struct Index {
 
   // 自动控制相关状态（由 C++ 常驻线程执行，ETS 仅配置开关和默认阈值）
   @State autoControlEnabled: boolean = false;
-  @State autoSoilOn: number = 1200;
-  @State autoSoilOff: number = 1600;
+  @State autoSoilOn: number = 30;
+  @State autoSoilOff: number = 50;
   @State autoLightOn: number = 30;
   @State autoLightOff: number = 50;
   @State autoTempOn: number = 30;
@@ -770,24 +770,24 @@ struct Index {
           .margin({ bottom: 12 })
 
           // 阈值调节：土壤湿度
-          Text(`土壤干阈值 soil_on: ${this.autoSoilOn}`).fontSize(14).margin({ bottom: 4 })
+          Text(`土壤干阈值 soil_on: ${this.autoSoilOn}%`).fontSize(14).margin({ bottom: 4 })
           Slider({
             value: this.autoSoilOn,
             min: 0,
-            max: 3000,
-            step: 10
+            max: 100,
+            step: 1
           })
             .onChange((value: number) => {
               this.autoSoilOn = value;
             })
             .margin({ bottom: 8 })
 
-          Text(`土壤湿阈值 soil_off: ${this.autoSoilOff}`).fontSize(14).margin({ bottom: 4 })
+          Text(`土壤湿阈值 soil_off: ${this.autoSoilOff}%`).fontSize(14).margin({ bottom: 4 })
           Slider({
             value: this.autoSoilOff,
             min: 0,
-            max: 3000,
-            step: 10
+            max: 100,
+            step: 1
           })
             .onChange((value: number) => {
               this.autoSoilOff = value;
