@@ -172,29 +172,8 @@ bool BuildSensorPayloadJson(bool includeImage, std::string &outJson, std::string
     float salt = sensor::GetDataByKey("Salt");
     float tds = sensor::GetDataByKey("TDS");
 
-    // 简单告警判断：根据 EC、pH、N、P、K 是否超出配置的上下限给出 alarm 标志
-    // alarm = 0 表示无告警；>0 表示存在至少一项超限（当前使用 1/0 即可，后续可扩展为位掩码）。
-    int alarm = 0;
-
-    auto in_range_or_unset = [](float value, double minV, double maxV) {
-        // 若 min/max 均为 0，则认为未配置该项，不做告警
-        if (minV == 0.0 && maxV == 0.0) {
-            return true;
-        }
-        if (value < static_cast<float>(minV) || value > static_cast<float>(maxV)) {
-            return false;
-        }
-        return true;
-    };
-
-    // 读取当前配置的养分/酸碱报警阈值
-    control::AutoControlThresholds thresholds = control::GetThresholds();
-
-    if (!in_range_or_unset(ph, thresholds.ph_min, thresholds.ph_max)) alarm = 1;
-    if (!in_range_or_unset(ec, thresholds.ec_min, thresholds.ec_max)) alarm = 1;
-    if (!in_range_or_unset(n, thresholds.n_min, thresholds.n_max)) alarm = 1;
-    if (!in_range_or_unset(p, thresholds.p_min, thresholds.p_max)) alarm = 1;
-    if (!in_range_or_unset(k, thresholds.k_min, thresholds.k_max)) alarm = 1;
+    // alarm 统一由 auto_control 提供，作为设备执行逻辑与上报显示的单一来源
+    int alarm = control::GetAutoControlAlarm();
 
     int humidity = static_cast<int>(humidityF + (humidityF >= 0 ? 0.5f : -0.5f));
     int co2 = static_cast<int>(co2F + (co2F >= 0 ? 0.5f : -0.5f));

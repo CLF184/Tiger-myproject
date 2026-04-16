@@ -38,7 +38,7 @@ struct AutoControlThresholds {
     double co2_night_off = 800.0; // 夜间低阈值
 
     // 土壤多参数报警阈值：EC、pH、N、P、K 上下限
-    // alarm 仅用于 MQTT 上报和前端显示，不直接驱动执行器
+    // alarm 用于 MQTT 上报/前端显示；在自动控制开启时也可用于触发短促蜂鸣提示
     double ph_min = 5.5;
     double ph_max = 8.5;
     double ec_min = 0.0;
@@ -57,6 +57,9 @@ struct AutoControlThresholds {
 // 全局开关：false 时阈值不生效（线程仍运行，用于接收配置/保持状态）。
 void SetAutoControlEnabled(bool enabled);
 bool GetAutoControlEnabled();
+
+// 获取当前养分/酸碱报警状态：0 无告警，1 有告警
+int GetAutoControlAlarm();
 
 void SetThresholds(const AutoControlThresholds &t);
 AutoControlThresholds GetThresholds();

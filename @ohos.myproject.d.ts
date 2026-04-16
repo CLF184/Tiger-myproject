@@ -185,6 +185,11 @@ declare namespace myproject {
     function getAutoControlEnabled(): boolean;
 
     /**
+     * 获取自动控制报警状态（0: 无告警, 1: 有告警）
+     */
+    function getAutoControlAlarm(): number;
+
+    /**
      * 设置自动控制阈值（字段可选，未提供的字段保持不变）
      * on/off 为迟滞阈值，避免抖动。
      */

@@ -70,6 +70,14 @@ static napi_value getAutoControlEnabled(napi_env env, napi_callback_info info)
     return result;
 }
 
+static napi_value getAutoControlAlarm(napi_env env, napi_callback_info info)
+{
+    (void)info;
+    napi_value result;
+    NAPI_CALL(env, napi_create_int32(env, control::GetAutoControlAlarm(), &result));
+    return result;
+}
+
 static napi_value setAutoControlThresholds(napi_env env, napi_callback_info info)
 {
     size_t argc = 1;
@@ -219,6 +227,7 @@ napi_value RegisterControlApis(napi_env env, napi_value exports)
     napi_property_descriptor desc[] = {
         DECLARE_NAPI_FUNCTION("setAutoControlEnabled", setAutoControlEnabled),
         DECLARE_NAPI_FUNCTION("getAutoControlEnabled", getAutoControlEnabled),
+        DECLARE_NAPI_FUNCTION("getAutoControlAlarm", getAutoControlAlarm),
         DECLARE_NAPI_FUNCTION("setAutoControlThresholds", setAutoControlThresholds),
         DECLARE_NAPI_FUNCTION("getAutoControlThresholds", getAutoControlThresholds),
         DECLARE_NAPI_FUNCTION("setAutoControlCommandTopic", setAutoControlCommandTopic),

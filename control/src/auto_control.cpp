@@ -38,6 +38,11 @@ bool g_ledOn = false;
 bool g_fanOn = false;
 bool g_buzzerOn = false;
 bool g_shadeOn = false;  // 遮阳板当前是否处于遮挡状态
+std::atomic<bool> g_alarmActive{false};
+std::chrono::steady_clock::time_point g_lastAlarmBeepTime = std::chrono::steady_clock::time_point::min();
+
+static constexpr int kAlarmBeepMs = 120;
+static constexpr int kAlarmBeepCooldownMs = 30000;
 
 // 使用静态阈值控制光照（已移除在线自适应逻辑）
 
@@ -139,42 +144,25 @@ void ClampThresholds(AutoControlThresholds &t)
     if (t.k_min > t.k_max && !(t.k_min == 0.0 && t.k_max == 0.0)) std::swap(t.k_min, t.k_max);
 }
 
-// ----------------- 模糊控制辅助函数 -----------------
-// 返回在区间 [on, off] 内线性下降的“需要度”（用于当变量越低越需要激活的情况，
-// 例如土壤湿度：低湿度 -> 更需要灌溉）。当 on >= off 时退化为原始的阈值行为。
-double FuzzyLowerDegree(double x, double on, double off)
+bool InRangeOrUnset(double value, double minV, double maxV)
 {
-    if (on >= off) {
-        return (x <= on) ? 1.0 : 0.0;
+    if (minV == 0.0 && maxV == 0.0) {
+        return true;
     }
-    if (x <= on) return 1.0;
-    if (x >= off) return 0.0;
-    return (off - x) / (off - on);
+    return !(value < minV || value > maxV);
 }
 
-// 返回在区间 [on, off] 内线性上升的“需要度”（用于当变量越高越需要激活的情况，
-// 例如温度/CO2/光照：越高越需要风扇/遮阳）。当 on >= off 时退化为原始的阈值行为。
-double FuzzyUpperDegree(double x, double on, double off)
+bool HasNutrientAlarm(const AutoControlThresholds &t, double ph, double ec, double n, double p, double k)
 {
-    if (on >= off) {
-        return (x >= on) ? 1.0 : 0.0;
-    }
-    if (x <= on) return 0.0;
-    if (x >= off) return 1.0;
-    return (x - on) / (off - on);
+    if (!InRangeOrUnset(ph, t.ph_min, t.ph_max)) return true;
+    if (!InRangeOrUnset(ec, t.ec_min, t.ec_max)) return true;
+    if (!InRangeOrUnset(n, t.n_min, t.n_max)) return true;
+    if (!InRangeOrUnset(p, t.p_min, t.p_max)) return true;
+    if (!InRangeOrUnset(k, t.k_min, t.k_max)) return true;
+    return false;
 }
 
-// 模糊开启/关闭判定的上下阈（可以后续调整为可配置）
-static constexpr double kFuzzyOnThreshold = 0.6;
-static constexpr double kFuzzyOffThreshold = 0.4;
-
-// 将 degree（0..1）映射为风扇转速（0..maxSpeed）
-int DegreeToFanSpeed(double degree, int maxSpeed)
-{
-    if (degree <= 0.0) return 0;
-    if (degree >= 1.0) return maxSpeed;
-    return static_cast<int>(std::round(degree * maxSpeed));
-}
+// 已移除模糊控制相关函数，改用简单的静态阈值与迟滞逻辑。
 
 
 void ApplyCommandJson(const std::string &jsonRaw)
@@ -404,12 +392,17 @@ void ControlLoop()
             const double temp = static_cast<double>(sensor::GetDataByKey("Temp"));
             const double co2 = static_cast<double>(sensor::GetDataByKey("CO_2"));
             const double light = static_cast<double>(sensor::GetDataByKey("Light"));
+            const double ph = static_cast<double>(sensor::GetDataByKey("pH"));
+            const double ec = static_cast<double>(sensor::GetDataByKey("EC"));
+            const double n = static_cast<double>(sensor::GetDataByKey("N"));
+            const double p = static_cast<double>(sensor::GetDataByKey("P"));
+            const double k = static_cast<double>(sensor::GetDataByKey("K"));
 
             // 使用静态光照阈值（已撤销自适应调整）
 
             // 启用瞬间：用当前读数初始化状态，避免迟滞区间沿用旧状态
             if (!lastEnabled) {
-                g_pumpOn = (soil <= t.soil_on);
+                g_pumpOn = (soil < t.soil_on);
                 g_ledOn = (light <= t.light_on); // 初始化时使用静态阈值
                 const double co2OnInit = isDay ? t.co2_on : t.co2_night_on;
                 // 白天：温度或 CO2 超标任一条件满足则开启
@@ -423,12 +416,10 @@ void ControlLoop()
                 }
             }
 
-            // 水泵：soil 低于 soil_on 开，高于 soil_off 关
-            // 使用模糊控制：根据 soil 在 [soil_on, soil_off] 之间线性计算“需要灌溉度”。
+            // 水泵：soil 低于 soil_on 开，高于 soil_off 关（迟滞）
             {
-                double soilDegree = FuzzyLowerDegree(soil, static_cast<double>(t.soil_on), static_cast<double>(t.soil_off));
-                if (soilDegree >= kFuzzyOnThreshold) g_pumpOn = true;
-                else if (soilDegree <= kFuzzyOffThreshold) g_pumpOn = false;
+                if (soil < static_cast<double>(t.soil_on)) g_pumpOn = true;
+                else if (soil >= static_cast<double>(t.soil_off)) g_pumpOn = false;
 
                 if (g_pumpOn) {
                     (void)pump_on();
@@ -437,11 +428,10 @@ void ControlLoop()
                 }
             }
 
-            // LED：使用模糊控制，light 越低越需要补光
+            // LED：静态阈值 + 迟滞控制
             {
-                double lightLowDegree = FuzzyLowerDegree(light, static_cast<double>(t.light_on), static_cast<double>(t.light_off));
-                if (lightLowDegree >= kFuzzyOnThreshold) g_ledOn = true;
-                else if (lightLowDegree <= kFuzzyOffThreshold) g_ledOn = false;
+                if (light <= static_cast<double>(t.light_on)) g_ledOn = true;
+                else if (light >= static_cast<double>(t.light_off)) g_ledOn = false;
 
                 if (g_ledOn) {
                     (void)LedOn();
@@ -450,43 +440,59 @@ void ControlLoop()
                 }
             }
 
-            // 风扇：
-            // - 白天：使用 co2_on/co2_off
-            // - 夜间：使用 co2_night_on/co2_night_off
-            // 风扇：模糊融合温度与 CO2，需要度按最大或可加权方式合成，最终映射到速度
+            // 风扇：使用静态阈值与迟滞控制，速度固定为 t.fan_speed
             {
-                double tempDegree = FuzzyUpperDegree(temp, static_cast<double>(t.temp_off), static_cast<double>(t.temp_on));
-                double co2ThresholdOn = isDay ? t.co2_on : t.co2_night_on;
-                double co2ThresholdOff = isDay ? t.co2_off : t.co2_night_off;
-                double co2Degree = FuzzyUpperDegree(co2, static_cast<double>(co2ThresholdOff), static_cast<double>(co2ThresholdOn));
-
-                // 简单规则：需要度取两者最大值（若任一项高则开启），也可以改为加权平均
-                double needDegree = std::max(tempDegree, co2Degree);
-
-                // 根据 needDegree 计算风扇速度并使用模糊开/关迟滞
-                int targetSpeed = DegreeToFanSpeed(needDegree, t.fan_speed);
-                if (needDegree >= kFuzzyOnThreshold) g_fanOn = true;
-                else if (needDegree <= kFuzzyOffThreshold) g_fanOn = false;
-
-                if (g_fanOn && targetSpeed > 0) {
-                    (void)controlMotor(MOTOR_FORWARD, targetSpeed);
+                if (isDay) {
+                    if (temp >= t.temp_on || co2 >= t.co2_on) g_fanOn = true;
+                    if (temp <= t.temp_off && co2 <= t.co2_off) g_fanOn = false;
+                } else {
+                    if (temp >= t.temp_on || co2 >= t.co2_night_on) g_fanOn = true;
+                    if (temp <= t.temp_off && co2 <= t.co2_night_off) g_fanOn = false;
+                }
+                if (g_fanOn) {
+                    (void)controlMotor(MOTOR_FORWARD, t.fan_speed);
                 } else {
                     (void)setMotorDirection(MOTOR_STOP);
                 }
             }
-            // 甲醛阈值不再参与自动蜂鸣器控制，蜂鸣器仅通过手动/命令触发
 
-            // 舵机遮阳：仅在白天根据光照+温度控制，夜间强制收起遮阳板
+            // 报警短促蜂鸣：养分/酸碱超限时触发，带冷却时间避免过于频繁。
+            {
+                const bool alarmNow = HasNutrientAlarm(t, ph, ec, n, p, k);
+                const auto now = std::chrono::steady_clock::now();
+                bool allowBeep = false;
+
+                if (alarmNow) {
+                    if (!g_alarmActive.load()) {
+                        allowBeep = true; // 报警刚出现，立即提示一次
+                    } else if (g_lastAlarmBeepTime == std::chrono::steady_clock::time_point::min()) {
+                        allowBeep = true;
+                    } else {
+                        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - g_lastAlarmBeepTime);
+                        allowBeep = (elapsed.count() >= kAlarmBeepCooldownMs);
+                    }
+                }
+
+                if (allowBeep && !g_buzzerOn) {
+                    (void)BuzzerBeep(kAlarmBeepMs);
+                    g_lastAlarmBeepTime = now;
+                }
+
+                g_alarmActive.store(alarmNow);
+            }
+
+            // 舵机遮阳：仅在白天根据光照+温度控制，夜间强制收起遮阳板（静态阈值 + 迟滞）
             {
                 bool needShade = false;
                 if (isDay) {
-                    double lightHighDegree = FuzzyUpperDegree(light, static_cast<double>(t.light_on), static_cast<double>(t.light_off));
-                    double tempHighDegree = FuzzyUpperDegree(temp, static_cast<double>(t.temp_off), static_cast<double>(t.temp_on));
-                    // 需要遮阳当光强与温度同时较高，取 min 表示“且”逻辑
-                    double shadeDegree = std::min(lightHighDegree, tempHighDegree);
-                    if (shadeDegree >= kFuzzyOnThreshold) needShade = true;
-                    else if (shadeDegree <= kFuzzyOffThreshold) needShade = false;
-                    else needShade = g_shadeOn;
+                    if (light >= t.light_off && temp >= t.temp_on) {
+                        needShade = true;
+                    } else if (light <= t.light_on && temp <= t.temp_off) {
+                        needShade = false;
+                    } else {
+                        needShade = g_shadeOn;
+                    }
                 } else {
                     needShade = false;
                 }
@@ -510,11 +516,20 @@ void ControlLoop()
 void SetAutoControlEnabled(bool enabled)
 {
     g_enabled.store(enabled);
+    if (!enabled) {
+        g_alarmActive.store(false);
+        g_lastAlarmBeepTime = std::chrono::steady_clock::time_point::min();
+    }
 }
 
 bool GetAutoControlEnabled()
 {
     return g_enabled.load();
+}
+
+int GetAutoControlAlarm()
+{
+    return g_alarmActive.load() ? 1 : 0;
 }
 
 void SetThresholds(const AutoControlThresholds &t)

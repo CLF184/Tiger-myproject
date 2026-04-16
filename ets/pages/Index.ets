@@ -115,6 +115,7 @@ struct Index {
     // 读取当前自动控制配置
     try {
       this.autoControlEnabled = myproject.getAutoControlEnabled();
+      this.nutrientAlarm = myproject.getAutoControlAlarm();
       const t = myproject.getAutoControlThresholds();
       this.autoSoilOn = t.soil_on;
       this.autoSoilOff = t.soil_off;
@@ -323,21 +324,8 @@ struct Index {
       this.tds = tdsData;
     }
 
-    // 依据当前阈值在前端本地计算养分/酸碱报警，和 MQTT alarm 语义保持一致
-    const inRangeOrUnset = (value: number, minV: number, maxV: number): boolean => {
-      if (minV === 0 && maxV === 0) {
-        return true;
-      }
-      return !(value < minV || value > maxV);
-    };
-
-    const phOk = inRangeOrUnset(this.ph, this.autoPhMin, this.autoPhMax);
-    const ecOk = inRangeOrUnset(this.ec, this.autoEcMin, this.autoEcMax);
-    const nOk = inRangeOrUnset(this.nValue, this.autoNMin, this.autoNMax);
-    const pOk = inRangeOrUnset(this.pValue, this.autoPMin, this.autoPMax);
-    const kOk = inRangeOrUnset(this.kValue, this.autoKMin, this.autoKMax);
-
-    this.nutrientAlarm = (phOk && ecOk && nOk && pOk && kOk) ? 0 : 1;
+    // 报警状态统一从底层 auto_control 接口读取，避免前端与设备侧语义分叉
+    this.nutrientAlarm = myproject.getAutoControlAlarm();
   }
 
   // 水泵控制
