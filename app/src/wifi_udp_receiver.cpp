@@ -45,6 +45,15 @@ static char g_udpData[WIFI_UDP_BUF_SIZE] = {0};
 static int g_frameStatus = 0; // 0=等待帧头, 1=接收数据, 2=转义中
 static std::vector<uint8_t> g_frameBuf;
 
+static uint8_t CalcChecksum(const uint8_t *buf, size_t n)
+{
+    uint8_t sum = 0;
+    for (size_t i = 0; i < n; i++) {
+        sum = static_cast<uint8_t>(sum + buf[i]);
+    }
+    return sum;
+}
+
 static void WriteBytesToFile(const std::vector<uint8_t> &bytes, const char *fileName)
 {
     if (!fileName) {
@@ -70,12 +79,27 @@ static void SaveLatestTextLocked(const uint8_t *buf, size_t n)
 
 static void HandleCompleteFrame(uint8_t frameType)
 {
+    if (g_frameBuf.empty()) {
+        g_frameBuf.clear();
+        return;
+    }
+
+    const uint8_t recvChecksum = g_frameBuf.back();
+    const size_t payloadLen = g_frameBuf.size() - 1;
+    const uint8_t calcChecksum = CalcChecksum(g_frameBuf.data(), payloadLen);
+    if (recvChecksum != calcChecksum) {
+        // 校验失败：丢弃当前帧，等待后续重传/下一帧
+        g_frameBuf.clear();
+        return;
+    }
+
     if (frameType == FRAME_END) {
         pthread_mutex_lock(&g_udpMutex);
-        SaveLatestTextLocked(g_frameBuf.data(), g_frameBuf.size());
+        SaveLatestTextLocked(g_frameBuf.data(), payloadLen);
         pthread_mutex_unlock(&g_udpMutex);
     } else if (frameType == CAMERA_END) {
-        WriteBytesToFile(g_frameBuf, PHOTO_PATH);
+        std::vector<uint8_t> image(g_frameBuf.begin(), g_frameBuf.end() - 1);
+        WriteBytesToFile(image, PHOTO_PATH);
         NotifyImageCapturedFromNative(PHOTO_PATH);
     }
     g_frameBuf.clear();

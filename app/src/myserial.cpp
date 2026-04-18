@@ -61,6 +61,15 @@ typedef struct {
     int len;                   // 数据长度
 } SerialOutputParams;
 
+static uint8_t CalcChecksum(const vector<unsigned char>& data, size_t n)
+{
+    uint8_t sum = 0;
+    for (size_t i = 0; i < n; ++i) {
+        sum = static_cast<uint8_t>(sum + data[i]);
+    }
+    return sum;
+}
+
 void WriteFrameToFile(const vector<uint8_t>& frameData, const char* fileName)
 {
     ofstream file(fileName, ios::binary | ios::trunc);
@@ -102,20 +111,32 @@ void *_serial_input_task(void* arg)// 串口读线程
                 status=2;  //切换-处理转义
             }
             else if(buf==FRAME_END){ //结束接收
-                //cout<<endl;
-                frame_len = count;
                 status = 0; //切换-等待帧头
-                pthread_mutex_lock(&recv_mutex);  // 加锁
-                data_buffer.assign(data_buffer_temp.begin(), data_buffer_temp.end()); // 将临时缓冲区的数据复制到数据缓冲区
-                pthread_mutex_unlock(&recv_mutex);  // 解锁
+                if (!data_buffer_temp.empty()) {
+                    const size_t payloadLen = data_buffer_temp.size() - 1;
+                    const uint8_t recvChecksum = data_buffer_temp.back();
+                    const uint8_t calcChecksum = CalcChecksum(data_buffer_temp, payloadLen);
+                    if (recvChecksum == calcChecksum) {
+                        frame_len = static_cast<int>(payloadLen);
+                        pthread_mutex_lock(&recv_mutex);  // 加锁
+                        data_buffer.assign(data_buffer_temp.begin(), data_buffer_temp.begin() + payloadLen); // 去除校验和字节
+                        pthread_mutex_unlock(&recv_mutex);  // 解锁
+                    }
+                }
             }
             else if(buf==CAMERA_END){
-                //cout<<endl;
                 status = 0; //切换-等待帧头
-                //frame_len = count;
-                WriteFrameToFile(data_buffer_temp,PHOTO_PATH);
-                cout<< "Frame received and written to file." <<endl;
-                NotifyImageCapturedFromNative(PHOTO_PATH);
+                if (!data_buffer_temp.empty()) {
+                    const size_t payloadLen = data_buffer_temp.size() - 1;
+                    const uint8_t recvChecksum = data_buffer_temp.back();
+                    const uint8_t calcChecksum = CalcChecksum(data_buffer_temp, payloadLen);
+                    if (recvChecksum == calcChecksum) {
+                        vector<uint8_t> imageData(data_buffer_temp.begin(), data_buffer_temp.begin() + payloadLen);
+                        WriteFrameToFile(imageData,PHOTO_PATH);
+                        cout<< "Frame received and written to file." <<endl;
+                        NotifyImageCapturedFromNative(PHOTO_PATH);
+                    }
+                }
             }
             else {
                 data_buffer_temp.push_back(buf); // 将数据存入临时缓冲区

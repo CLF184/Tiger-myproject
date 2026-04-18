@@ -51,15 +51,34 @@ SemaphoreHandle_t serialMutex = NULL;
 
 Adafruit_NeoPixel pixels(PIX_NUM, PIN_PIXS, NEO_GRB + NEO_KHZ800);
 
+static uint8_t CalcChecksum(const char *buf, int len)
+{
+  uint8_t sum = 0;
+  for (int i = 0; i < len; i++) {
+    sum = (uint8_t)(sum + (uint8_t)buf[i]);
+  }
+  return sum;
+}
+
+static inline void AppendEscapedByte(uint8_t *frame, int &pos, uint8_t value)
+{
+  if (value == ESC || value == FRAME_END || value == FRAME_HEAD || value == CAMERA_END) {
+    frame[pos++] = ESC;
+  }
+  frame[pos++] = value;
+}
+
 // 保留原有帧格式(FRAME_HEAD/ESC/END)，并同时通过串口和 UDP 广播发送
 void transmitData(const char *buf, int len,unsigned char type){
-  // 为 UDP 广播准备的帧缓冲：最坏情况每字节都需要 ESC 转义，所以分配 2*len + 2
-  const int maxLen = (len * 2) + 2;
+  // 帧格式：HEAD + escaped(payload + checksum) + type
+  // 最坏情况 payload+checksum 每字节都需要转义：2*(len+1)，再加 HEAD 和 type
+  const int maxLen = ((len + 1) * 2) + 2;
   uint8_t *frame = (uint8_t *)pvPortMalloc(maxLen);
   if (frame == NULL) {
     return;
   }
   int pos = 0;
+  const uint8_t checksum = CalcChecksum(buf, len);
 
   if(xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE){
     // 帧头
@@ -68,11 +87,11 @@ void transmitData(const char *buf, int len,unsigned char type){
     // 数据 + 转义
     for(int i = 0; i < len; i++) {
       uint8_t temp = (uint8_t)buf[i];
-      if(temp == ESC || temp == FRAME_END || temp == FRAME_HEAD || temp == CAMERA_END){
-        frame[pos++] = ESC;
-      }
-      frame[pos++] = temp;
+      AppendEscapedByte(frame, pos, temp);
     }
+
+    // 校验和也参与转义
+    AppendEscapedByte(frame, pos, checksum);
 
     // 结束/类型字节（例如 FRAME_END 或 CAMERA_END）
     frame[pos++] = (uint8_t)type;
